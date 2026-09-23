@@ -1,0 +1,11 @@
+{
+  "name": "BEBBA Healthy Food",
+  "description": "Plateforme complète de commande, préparation KDS, livraison avec suivi GPS en direct et gestion de réclamations.",
+  "requestFramePermissions": [
+    "geolocation"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
+
