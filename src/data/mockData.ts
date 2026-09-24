@@ -11,8 +11,66 @@ import {
   Category,
   Supplier,
   SystemNotification,
-  AppSettings
+  AppSettings,
+  DeliveryZone
 } from '../types';
+
+export const INITIAL_DELIVERY_ZONES: DeliveryZone[] = [
+  {
+    id: 'zone_lac',
+    name: 'Les Berges du Lac 1 & 2',
+    active: true,
+    deliveryFee: 4.0,
+    minOrderAmount: 15.0,
+    estimatedMinutes: 25,
+    description: 'Lac 1, Lac 2, Berges du Lac - Hub Central BEBBA'
+  },
+  {
+    id: 'zone_marsa',
+    name: 'La Marsa, Gammarth & Sidi Bou Saïd',
+    active: true,
+    deliveryFee: 6.0,
+    minOrderAmount: 20.0,
+    estimatedMinutes: 35,
+    description: 'Banlieue Nord'
+  },
+  {
+    id: 'zone_carthage',
+    name: 'Carthage, Le Kram & La Goulette',
+    active: true,
+    deliveryFee: 5.0,
+    minOrderAmount: 20.0,
+    estimatedMinutes: 30,
+    description: 'Zone côtière historique'
+  },
+  {
+    id: 'zone_menzah',
+    name: 'Menzah, Ennasr & Centre Urbain Nord',
+    active: true,
+    deliveryFee: 5.0,
+    minOrderAmount: 20.0,
+    estimatedMinutes: 30,
+    description: 'Quartiers d affaires et résidences'
+  },
+  {
+    id: 'zone_centre',
+    name: 'Tunis Centre, Lafayette & Mutuelleville',
+    active: true,
+    deliveryFee: 5.0,
+    minOrderAmount: 20.0,
+    estimatedMinutes: 35,
+    description: 'Centre-ville'
+  },
+  {
+    id: 'zone_ariana',
+    name: 'Ariana & La Soukra',
+    active: true,
+    deliveryFee: 6.0,
+    minOrderAmount: 25.0,
+    estimatedMinutes: 40,
+    description: 'Zone résidentielle nord'
+  }
+];
 
 export const INITIAL_CATEGORIES: Category[] = [
   { id: 'cat_1', name: 'Healthy', slug: 'healthy', description: 'Bowls équilibrés, salades riches en micronutriments et superaliments frais.', displayOrder: 1, isActive: true },

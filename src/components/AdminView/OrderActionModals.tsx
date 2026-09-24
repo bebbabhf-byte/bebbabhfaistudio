@@ -245,3 +245,133 @@ export const ReassignDriverModal: React.FC<ReassignDriverModalProps> = ({
     </div>
   );
 };
+
+interface PriorityOrderModalProps {
+  order: Order | null;
+  onClose: () => void;
+  onSuccess: () => void;
+}
+
+export const PriorityOrderModal: React.FC<PriorityOrderModalProps> = ({
+  order,
+  onClose,
+  onSuccess
+}) => {
+  const { currentUser } = useAuth();
+  const [priority, setPriority] = useState<'normal' | 'urgent' | 'vip'>((order?.priority as any) || 'normal');
+  const [reason, setReason] = useState(order?.priorityReason || '');
+  const [submitting, setSubmitting] = useState(false);
+  const [errorMsg, setErrorMsg] = useState('');
+
+  if (!order) return null;
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!reason.trim()) {
+      setErrorMsg('Le motif de modification de priorité est obligatoire (§6).');
+      return;
+    }
+
+    try {
+      setSubmitting(true);
+      setErrorMsg('');
+      const { updateOrderPriority } = await import('../../services/api');
+      await updateOrderPriority(order.id, priority, reason.trim(), currentUser.name);
+      onSuccess();
+      onClose();
+    } catch (err: any) {
+      setErrorMsg(err.message || 'Erreur lors de la modification de priorité');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+      <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl animate-in zoom-in-95">
+        <div className="flex items-center justify-between border-b border-stone-100 pb-3 mb-4">
+          <div className="flex items-center gap-2 text-amber-600 font-bold">
+            <span>Modifier la Priorité : {order.orderNumber}</span>
+          </div>
+          <button onClick={onClose} className="p-1 rounded-full text-stone-400 hover:bg-stone-100">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="space-y-4 text-xs">
+          {errorMsg && (
+            <div className="p-3 bg-rose-50 border border-rose-200 text-rose-700 rounded-xl font-medium">
+              {errorMsg}
+            </div>
+          )}
+
+          <div className="p-3 bg-stone-50 rounded-2xl border border-stone-200 space-y-1">
+            <div className="flex items-center justify-between">
+              <span className="text-stone-500">Client :</span>
+              <strong className="text-stone-900">{order.clientName}</strong>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-stone-500">Statut :</span>
+              <span className="px-2 py-0.5 rounded-full font-bold bg-stone-200 text-stone-800 text-[10px]">
+                {order.orderStatus}
+              </span>
+            </div>
+          </div>
+
+          <div>
+            <label className="block font-bold text-stone-700 mb-1">Niveau de Priorité Cuisine & Livraison *</label>
+            <div className="grid grid-cols-3 gap-2">
+              {(['normal', 'urgent', 'vip'] as const).map(p => (
+                <button
+                  key={p}
+                  type="button"
+                  onClick={() => setPriority(p)}
+                  className={`p-3 rounded-xl border text-center font-bold uppercase text-[11px] transition ${
+                    priority === p
+                      ? p === 'urgent'
+                        ? 'bg-rose-100 border-rose-400 text-rose-800 ring-2 ring-rose-500'
+                        : p === 'vip'
+                          ? 'bg-purple-100 border-purple-400 text-purple-800 ring-2 ring-purple-500'
+                          : 'bg-emerald-100 border-emerald-400 text-emerald-800 ring-2 ring-emerald-500'
+                      : 'bg-stone-50 border-stone-200 text-stone-600 hover:bg-stone-100'
+                  }`}
+                >
+                  {p}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <label className="block font-bold text-stone-700 mb-1">Motif obligatoire de la modification (§6) *</label>
+            <textarea
+              rows={3}
+              required
+              value={reason}
+              onChange={e => setReason(e.target.value)}
+              placeholder="Ex: Retard suite à un incident de circulation, client institutionnel prioritaire, etc."
+              className="w-full px-3 py-2 border rounded-xl focus:ring-2 focus:ring-amber-500 focus:outline-none"
+            />
+          </div>
+
+          <div className="flex items-center justify-end gap-2 pt-4 border-t border-stone-100">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-2 rounded-xl text-stone-600 hover:bg-stone-100 font-semibold"
+            >
+              Annuler
+            </button>
+            <button
+              type="submit"
+              disabled={submitting}
+              className="px-5 py-2 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-bold transition shadow-md shadow-amber-600/20 disabled:opacity-50"
+            >
+              {submitting ? 'Enregistrement...' : 'Enregistrer la priorité'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+};

@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { AppSettings } from '../../types';
-import { fetchSettings, updateSettings } from '../../services/api';
+import { fetchSettings, updateSettings, downloadBackup, restoreBackup } from '../../services/api';
 import {
   Settings,
   DollarSign,
@@ -12,7 +12,11 @@ import {
   Truck,
   Percent,
   Sliders,
-  Save
+  Save,
+  Database,
+  Download,
+  Upload,
+  AlertCircle
 } from 'lucide-react';
 
 export const SettingsTab: React.FC = () => {
@@ -232,6 +236,71 @@ export const SettingsTab: React.FC = () => {
                 className="w-full px-3 py-2 border rounded-xl bg-stone-100 text-stone-500 font-mono"
               />
             </div>
+          </div>
+        </div>
+
+        {/* Sauvegardes & Continuité d'activité (§81, §92) */}
+        <div className="bg-white p-5 rounded-2xl border border-stone-200 shadow-xs space-y-4 md:col-span-2">
+          <h4 className="font-bold text-stone-900 text-xs uppercase tracking-wider flex items-center gap-2 text-purple-700">
+            <Database className="w-4 h-4" />
+            <span>Sauvegarde, Restauration & Continuité d'Exploitation (§81, §92)</span>
+          </h4>
+
+          <p className="text-xs text-stone-500">
+            Exportez l'intégralité des données (utilisateurs, commandes, catalogue, stocks, clôtures de caisse et traçabilité) sous forme de snapshot JSON sécurisé, ou restaurez un état précédent.
+          </p>
+
+          <div className="flex flex-wrap items-center gap-3 pt-2">
+            <button
+              type="button"
+              onClick={async () => {
+                try {
+                  const backup = await downloadBackup();
+                  const dataStr = 'data:text/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(backup, null, 2));
+                  const dlAnchor = document.createElement('a');
+                  dlAnchor.setAttribute('href', dataStr);
+                  dlAnchor.setAttribute('download', `bebba_snapshot_${new Date().toISOString().slice(0, 10)}.json`);
+                  document.body.appendChild(dlAnchor);
+                  dlAnchor.click();
+                  dlAnchor.remove();
+                } catch (e: any) {
+                  alert(e.message || 'Erreur lors du téléchargement du backup');
+                }
+              }}
+              className="px-4 py-2.5 rounded-xl bg-stone-900 hover:bg-black text-white text-xs font-bold flex items-center gap-2 transition"
+            >
+              <Download className="w-4 h-4" />
+              <span>Exporter la sauvegarde complète (JSON)</span>
+            </button>
+
+            <label className="px-4 py-2.5 rounded-xl bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200 text-xs font-bold flex items-center gap-2 cursor-pointer transition">
+              <Upload className="w-4 h-4" />
+              <span>Restaurer une sauvegarde</span>
+              <input
+                type="file"
+                accept=".json"
+                className="hidden"
+                onChange={e => {
+                  const file = e.target.files?.[0];
+                  if (!file) return;
+                  const reader = new FileReader();
+                  reader.onload = async event => {
+                    try {
+                      const json = JSON.parse(event.target?.result as string);
+                      if (!confirm('Attention : La restauration remplacera toutes les données en mémoire. Voulez-vous continuer ?')) {
+                        return;
+                      }
+                      await restoreBackup(json);
+                      alert('Sauvegarde restaurée avec succès ! La page va s actualiser.');
+                      window.location.reload();
+                    } catch (err: any) {
+                      alert('Fichier invalide : ' + (err.message || 'Format JSON incorrect'));
+                    }
+                  };
+                  reader.readAsText(file);
+                }}
+              />
+            </label>
           </div>
         </div>
       </div>

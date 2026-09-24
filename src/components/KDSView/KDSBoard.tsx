@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Order, Recipe, Ingredient } from '../../types';
-import { fetchOrders, updateOrderStatus, fetchIngredients } from '../../services/api';
+import { fetchOrders, updateOrderStatus, fetchIngredients, fetchRecipes } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
 import {
   ChefHat,
@@ -12,15 +12,28 @@ import {
   Sparkles,
   RefreshCw,
   Flame,
-  AlertCircle
+  AlertCircle,
+  Warehouse,
+  Eye,
+  Search,
+  Filter,
+  AlertTriangle,
+  CheckCircle2,
+  TrendingDown,
+  BookOpen
 } from 'lucide-react';
 
 export const KDSBoard: React.FC = () => {
   const { currentUser } = useAuth();
   const [orders, setOrders] = useState<Order[]>([]);
   const [ingredients, setIngredients] = useState<Ingredient[]>([]);
-  const [activeTab, setActiveTab] = useState<'board' | 'recipes'>('board');
+  const [recipes, setRecipes] = useState<Recipe[]>([]);
+  const [activeTab, setActiveTab] = useState<'board' | 'stocks' | 'recipes'>('board');
   const [loading, setLoading] = useState(true);
+
+  // Read-only stock filters
+  const [stockSearch, setStockSearch] = useState('');
+  const [stockFilter, setStockFilter] = useState('all');
 
   useEffect(() => {
     loadKDS();
@@ -30,9 +43,14 @@ export const KDSBoard: React.FC = () => {
 
   const loadKDS = async () => {
     try {
-      const [allOrders, ings] = await Promise.all([fetchOrders(), fetchIngredients()]);
+      const [allOrders, ings, recs] = await Promise.all([
+        fetchOrders(),
+        fetchIngredients(),
+        fetchRecipes().catch(() => [])
+      ]);
       setOrders(allOrders);
       setIngredients(ings);
+      if (recs && recs.length > 0) setRecipes(recs);
     } catch (e) {
       console.error(e);
     } finally {
@@ -75,6 +93,19 @@ export const KDSBoard: React.FC = () => {
     return Math.max(0, diff);
   };
 
+  // Filtered ingredients for kitchen read-only view
+  const filteredIngredients = ingredients.filter(i => {
+    const matchesSearch =
+      i.name.toLowerCase().includes(stockSearch.toLowerCase()) ||
+      (i.supplierName && i.supplierName.toLowerCase().includes(stockSearch.toLowerCase()));
+    const matchesStatus = stockFilter === 'all' || i.status === stockFilter;
+    return matchesSearch && matchesStatus;
+  });
+
+  const lowStockCount = ingredients.filter(i => i.status === 'low' || i.currentStock <= i.minThreshold).length;
+  const outOfStockCount = ingredients.filter(i => i.status === 'out_of_stock' || i.currentStock === 0).length;
+  const optimalCount = ingredients.filter(i => i.status === 'optimal' && i.currentStock > i.minThreshold).length;
+
   return (
     <div className="py-6 px-4 sm:px-6 lg:px-8 max-w-7xl mx-auto">
       {/* KDS Header Banner */}
@@ -91,19 +122,50 @@ export const KDSBoard: React.FC = () => {
               </span>
             </div>
             <p className="text-xs text-stone-400 mt-0.5">
-              Préparation minute à la commande • Déstockage automatique des ingrédients selon recettes.
+              Préparation minute à la commande • Consultation du stock en temps réel • Déstockage automatique selon recettes.
             </p>
           </div>
         </div>
 
-        <div className="flex items-center gap-3">
-          <button
-            onClick={() => setActiveTab(activeTab === 'board' ? 'recipes' : 'board')}
-            className="bg-stone-800 hover:bg-stone-700 text-stone-200 px-4 py-2 rounded-xl text-xs font-bold transition flex items-center gap-2 border border-stone-700 cursor-pointer"
-          >
-            <Layers className="w-4 h-4 text-amber-400" />
-            <span>{activeTab === 'board' ? 'Fiches Recettes & Stocks' : 'Retour Commandes KDS'}</span>
-          </button>
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Tab buttons */}
+          <div className="flex items-center gap-1 bg-stone-800/80 p-1 rounded-xl border border-stone-700">
+            <button
+              onClick={() => setActiveTab('board')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
+                activeTab === 'board'
+                  ? 'bg-amber-500 text-stone-950 shadow-xs'
+                  : 'text-stone-300 hover:text-white'
+              }`}
+            >
+              <ChefHat className="w-3.5 h-3.5" />
+              <span>Commandes KDS ({receivedOrders.length + preparingOrders.length})</span>
+            </button>
+
+            <button
+              onClick={() => setActiveTab('stocks')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
+                activeTab === 'stocks'
+                  ? 'bg-amber-500 text-stone-950 shadow-xs'
+                  : 'text-stone-300 hover:text-white'
+              }`}
+            >
+              <Eye className="w-3.5 h-3.5" />
+              <span>Stocks & Ingrédients (Lecture Seule)</span>
+            </button>
+
+            <button
+              onClick={() => setActiveTab('recipes')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
+                activeTab === 'recipes'
+                  ? 'bg-amber-500 text-stone-950 shadow-xs'
+                  : 'text-stone-300 hover:text-white'
+              }`}
+            >
+              <BookOpen className="w-3.5 h-3.5" />
+              <span>Fiches Recettes</span>
+            </button>
+          </div>
 
           <button
             onClick={loadKDS}
@@ -115,71 +177,253 @@ export const KDSBoard: React.FC = () => {
         </div>
       </div>
 
-      {activeTab === 'recipes' ? (
-        // Recipes & Stock Status
-        <div className="bg-white rounded-3xl p-6 border border-stone-200 shadow-xs">
-          <h2 className="text-lg font-black text-stone-900 mb-4 flex items-center gap-2">
-            <Flame className="w-5 h-5 text-amber-600" />
-            Fiches Techniques Recettes & Consommation
-          </h2>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div className="p-5 rounded-2xl bg-stone-50 border border-stone-200">
-              <h3 className="font-bold text-sm text-stone-900 mb-2">
-                Blanc de Poulet Mariné aux Herbes & Légumes Rôtis
-              </h3>
-              <p className="text-xs text-stone-500 mb-3">
-                Pour 1 portion servie :
-              </p>
-              <ul className="text-xs space-y-1.5 font-medium text-stone-700">
-                <li className="flex justify-between">
-                  <span>• Blanc de poulet fermier</span>
-                  <span className="font-mono text-emerald-700 font-bold">250 g</span>
-                </li>
-                <li className="flex justify-between">
-                  <span>• Légumes maraîchers (courgettes/carottes)</span>
-                  <span className="font-mono text-emerald-700 font-bold">150 g</span>
-                </li>
-                <li className="flex justify-between">
-                  <span>• Huile d olive extra vierge</span>
-                  <span className="font-mono text-emerald-700 font-bold">10 ml</span>
-                </li>
-                <li className="flex justify-between">
-                  <span>• Épices et herbes maison</span>
-                  <span className="font-mono text-emerald-700 font-bold">5 g</span>
-                </li>
-              </ul>
+      {/* ========================================== */}
+      {/* TAB 1: STOCKS & INGREDIENTS (READ ONLY) */}
+      {/* ========================================== */}
+      {activeTab === 'stocks' && (
+        <div className="space-y-6">
+          {/* Read-Only Notice Banner */}
+          <div className="bg-amber-50 border border-amber-200 p-4 rounded-2xl flex flex-wrap items-center justify-between gap-3 text-amber-900">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-xl bg-amber-100 flex items-center justify-center text-amber-700 font-bold shrink-0">
+                <Eye className="w-5 h-5" />
+              </div>
+              <div>
+                <div className="font-bold text-xs uppercase tracking-wider flex items-center gap-1.5">
+                  <span>Consultation des Stocks Ingrédients — Accès Cuisine (Lecture Seule)</span>
+                  <span className="bg-amber-200 text-amber-950 px-2 py-0.2 rounded text-[10px] font-black">
+                    READ ONLY
+                  </span>
+                </div>
+                <div className="text-xs text-amber-700 mt-0.5">
+                  Vous consultez les réserves d ingrédients frais pour anticiper les préparations. Les ajouts et modifications sont gérés par l administration.
+                </div>
+              </div>
             </div>
 
-            <div className="p-5 rounded-2xl bg-stone-50 border border-stone-200">
-              <h3 className="font-bold text-sm text-stone-900 mb-2">
-                Bowl Saumon Sauvage & Quinoa Énergie
-              </h3>
-              <p className="text-xs text-stone-500 mb-3">
-                Pour 1 portion servie :
-              </p>
-              <ul className="text-xs space-y-1.5 font-medium text-stone-700">
-                <li className="flex justify-between">
-                  <span>• Filet de saumon atlantique</span>
-                  <span className="font-mono text-emerald-700 font-bold">180 g</span>
-                </li>
-                <li className="flex justify-between">
-                  <span>• Quinoa royal bio</span>
-                  <span className="font-mono text-emerald-700 font-bold">100 g</span>
-                </li>
-                <li className="flex justify-between">
-                  <span>• Avocat Hass mûr</span>
-                  <span className="font-mono text-emerald-700 font-bold">0.5 pièce</span>
-                </li>
-                <li className="flex justify-between">
-                  <span>• Huile d olive & assaisonnements</span>
-                  <span className="font-mono text-emerald-700 font-bold">8 ml</span>
-                </li>
-              </ul>
+            <div className="flex items-center gap-3 text-xs font-bold">
+              <span className="flex items-center gap-1 text-emerald-700">
+                <CheckCircle2 className="w-4 h-4" /> {optimalCount} optimaux
+              </span>
+              <span className="flex items-center gap-1 text-amber-700">
+                <AlertTriangle className="w-4 h-4" /> {lowStockCount} alertes
+              </span>
+              <span className="flex items-center gap-1 text-rose-700">
+                <TrendingDown className="w-4 h-4" /> {outOfStockCount} ruptures
+              </span>
+            </div>
+          </div>
+
+          {/* Table Card */}
+          <div className="bg-white rounded-2xl border border-stone-200 overflow-hidden shadow-xs">
+            {/* Filters */}
+            <div className="p-4 bg-stone-50 border-b border-stone-200 flex flex-wrap items-center justify-between gap-3 text-xs">
+              <div className="relative flex-1 min-w-[240px]">
+                <Search className="w-4 h-4 text-stone-400 absolute left-3 top-2.5" />
+                <input
+                  type="text"
+                  value={stockSearch}
+                  onChange={e => setStockSearch(e.target.value)}
+                  placeholder="Rechercher un ingrédient en réserve..."
+                  className="w-full pl-9 pr-4 py-2 border border-stone-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-amber-500"
+                />
+              </div>
+
+              <div className="flex items-center gap-2">
+                <Filter className="w-4 h-4 text-stone-400" />
+                <select
+                  value={stockFilter}
+                  onChange={e => setStockFilter(e.target.value)}
+                  className="p-2 border border-stone-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-amber-500 font-medium"
+                >
+                  <option value="all">Tous les états de stock</option>
+                  <option value="optimal">Stock Optimal</option>
+                  <option value="low">Alerte (Stock bas)</option>
+                  <option value="out_of_stock">Épuisé (Rupture)</option>
+                </select>
+              </div>
+            </div>
+
+            {/* Read-Only Table */}
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-stone-50 text-stone-500 font-semibold uppercase tracking-wider text-[11px] border-b border-stone-200">
+                  <tr>
+                    <th className="py-3 px-4">Ingrédient</th>
+                    <th className="py-3 px-4 text-center">Unité de Mesure</th>
+                    <th className="py-3 px-4 text-right">Stock Disponible</th>
+                    <th className="py-3 px-4 text-right">Seuil d Alerte Minimum</th>
+                    <th className="py-3 px-4">Fournisseur Référencé</th>
+                    <th className="py-3 px-4 text-center">État Opérationnel</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-stone-100">
+                  {filteredIngredients.length === 0 ? (
+                    <tr>
+                      <td colSpan={6} className="py-12 text-center text-stone-400">
+                        Aucun ingrédient ne correspond à la recherche.
+                      </td>
+                    </tr>
+                  ) : (
+                    filteredIngredients.map(ing => (
+                      <tr key={ing.id} className="hover:bg-amber-50/20 transition">
+                        <td className="py-3 px-4">
+                          <div className="font-bold text-stone-900">{ing.name}</div>
+                          <div className="text-[10px] text-stone-400 font-mono">{ing.id}</div>
+                        </td>
+
+                        <td className="py-3 px-4 text-center">
+                          <span className="bg-stone-100 px-2 py-0.5 rounded text-[11px] font-mono text-stone-700">
+                            {ing.unit}
+                          </span>
+                        </td>
+
+                        <td className="py-3 px-4 text-right font-mono font-black text-sm">
+                          <span
+                            className={
+                              ing.currentStock === 0
+                                ? 'text-rose-600'
+                                : ing.currentStock <= ing.minThreshold
+                                ? 'text-amber-600'
+                                : 'text-emerald-700'
+                            }
+                          >
+                            {ing.currentStock} {ing.unit}
+                          </span>
+                        </td>
+
+                        <td className="py-3 px-4 text-right font-mono text-stone-500">
+                          {ing.minThreshold} {ing.unit}
+                        </td>
+
+                        <td className="py-3 px-4 text-stone-600">
+                          {ing.supplierName || 'Fournisseur BEBBA'}
+                        </td>
+
+                        <td className="py-3 px-4 text-center">
+                          <span
+                            className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold ${
+                              ing.status === 'optimal'
+                                ? 'bg-emerald-100 text-emerald-800'
+                                : ing.status === 'low'
+                                ? 'bg-amber-100 text-amber-800'
+                                : 'bg-rose-100 text-rose-800'
+                            }`}
+                          >
+                            {ing.status === 'optimal'
+                              ? 'OPTIMAL'
+                              : ing.status === 'low'
+                              ? 'STOCK BAS'
+                              : 'ÉPUISÉ'}
+                          </span>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
             </div>
           </div>
         </div>
-      ) : (
-        // 3-Column KDS Board
+      )}
+
+      {/* ========================================== */}
+      {/* TAB 2: RECIPES */}
+      {/* ========================================== */}
+      {activeTab === 'recipes' && (
+        <div className="bg-white rounded-3xl p-6 border border-stone-200 shadow-xs">
+          <h2 className="text-lg font-black text-stone-900 mb-4 flex items-center gap-2">
+            <Flame className="w-5 h-5 text-amber-600" />
+            Fiches Techniques Recettes & Consommation par Portion
+          </h2>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {recipes.length > 0 ? (
+              recipes.map(recipe => (
+                <div key={recipe.id} className="p-5 rounded-2xl bg-stone-50 border border-stone-200">
+                  <h3 className="font-bold text-sm text-stone-900 mb-2">
+                    {recipe.productName}
+                  </h3>
+                  <p className="text-xs text-stone-500 mb-3">
+                    Dosage pour 1 portion servie :
+                  </p>
+                  <ul className="text-xs space-y-1.5 font-medium text-stone-700">
+                    {recipe.ingredients.map(ing => (
+                      <li key={ing.ingredientId} className="flex justify-between">
+                        <span>• {ing.ingredientName}</span>
+                        <span className="font-mono text-emerald-700 font-bold">
+                          {ing.quantity} {ing.unit}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ))
+            ) : (
+              <>
+                <div className="p-5 rounded-2xl bg-stone-50 border border-stone-200">
+                  <h3 className="font-bold text-sm text-stone-900 mb-2">
+                    Blanc de Poulet Mariné aux Herbes & Légumes Rôtis
+                  </h3>
+                  <p className="text-xs text-stone-500 mb-3">
+                    Pour 1 portion servie :
+                  </p>
+                  <ul className="text-xs space-y-1.5 font-medium text-stone-700">
+                    <li className="flex justify-between">
+                      <span>• Blanc de poulet fermier</span>
+                      <span className="font-mono text-emerald-700 font-bold">250 g</span>
+                    </li>
+                    <li className="flex justify-between">
+                      <span>• Légumes maraîchers (courgettes/carottes)</span>
+                      <span className="font-mono text-emerald-700 font-bold">150 g</span>
+                    </li>
+                    <li className="flex justify-between">
+                      <span>• Huile d olive extra vierge</span>
+                      <span className="font-mono text-emerald-700 font-bold">10 ml</span>
+                    </li>
+                    <li className="flex justify-between">
+                      <span>• Épices et herbes maison</span>
+                      <span className="font-mono text-emerald-700 font-bold">5 g</span>
+                    </li>
+                  </ul>
+                </div>
+
+                <div className="p-5 rounded-2xl bg-stone-50 border border-stone-200">
+                  <h3 className="font-bold text-sm text-stone-900 mb-2">
+                    Bowl Saumon Sauvage & Quinoa Énergie
+                  </h3>
+                  <p className="text-xs text-stone-500 mb-3">
+                    Pour 1 portion servie :
+                  </p>
+                  <ul className="text-xs space-y-1.5 font-medium text-stone-700">
+                    <li className="flex justify-between">
+                      <span>• Filet de saumon atlantique</span>
+                      <span className="font-mono text-emerald-700 font-bold">180 g</span>
+                    </li>
+                    <li className="flex justify-between">
+                      <span>• Quinoa royal bio</span>
+                      <span className="font-mono text-emerald-700 font-bold">100 g</span>
+                    </li>
+                    <li className="flex justify-between">
+                      <span>• Avocat Hass mûr</span>
+                      <span className="font-mono text-emerald-700 font-bold">0.5 pièce</span>
+                    </li>
+                    <li className="flex justify-between">
+                      <span>• Huile d olive & assaisonnements</span>
+                      <span className="font-mono text-emerald-700 font-bold">8 ml</span>
+                    </li>
+                  </ul>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ========================================== */}
+      {/* TAB 3: KDS COMMANDES KANBAN */}
+      {/* ========================================== */}
+      {activeTab === 'board' && (
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
           {/* 1. NOUVELLES COMMANDES */}
           <div className="bg-stone-100/70 rounded-3xl p-4 border border-stone-200 flex flex-col">
@@ -206,7 +450,7 @@ export const KDSBoard: React.FC = () => {
                   return (
                     <div
                       key={order.id}
-                      className="bg-white rounded-2xl p-4 border-2 border-rose-200 shadow-sm flex flex-col justify-between"
+                      className="bg-white rounded-2xl p-4 border-2 border-rose-200 shadow-xs flex flex-col justify-between"
                     >
                       <div>
                         <div className="flex items-center justify-between mb-2">
@@ -247,7 +491,7 @@ export const KDSBoard: React.FC = () => {
 
                       <button
                         onClick={() => handleStartPreparation(order.id)}
-                        className="w-full bg-rose-600 hover:bg-rose-700 text-white font-bold py-2.5 px-3 rounded-xl text-xs flex items-center justify-center gap-1.5 shadow-sm transition cursor-pointer"
+                        className="w-full bg-rose-600 hover:bg-rose-700 text-white font-bold py-2.5 px-3 rounded-xl text-xs flex items-center justify-center gap-1.5 shadow-xs transition cursor-pointer"
                       >
                         <Play className="w-3.5 h-3.5" />
                         Commencer Préparation
@@ -284,7 +528,7 @@ export const KDSBoard: React.FC = () => {
                   return (
                     <div
                       key={order.id}
-                      className="bg-white rounded-2xl p-4 border-2 border-amber-300 shadow-sm flex flex-col justify-between"
+                      className="bg-white rounded-2xl p-4 border-2 border-amber-300 shadow-xs flex flex-col justify-between"
                     >
                       <div>
                         <div className="flex items-center justify-between mb-2">
@@ -324,7 +568,7 @@ export const KDSBoard: React.FC = () => {
 
                       <button
                         onClick={() => handleMarkReady(order.id)}
-                        className="w-full bg-amber-600 hover:bg-amber-700 text-white font-bold py-2.5 px-3 rounded-xl text-xs flex items-center justify-center gap-1.5 shadow-sm transition cursor-pointer"
+                        className="w-full bg-amber-600 hover:bg-amber-700 text-white font-bold py-2.5 px-3 rounded-xl text-xs flex items-center justify-center gap-1.5 shadow-xs transition cursor-pointer"
                       >
                         <CheckCircle className="w-3.5 h-3.5" />
                         Déclarer Prête (Prêt à l expédition)
@@ -359,7 +603,7 @@ export const KDSBoard: React.FC = () => {
                 readyOrders.map(order => (
                   <div
                     key={order.id}
-                    className="bg-white rounded-2xl p-4 border border-emerald-200 shadow-sm"
+                    className="bg-white rounded-2xl p-4 border border-emerald-200 shadow-xs"
                   >
                     <div className="flex items-center justify-between mb-2">
                       <span className="font-mono font-black text-xs text-stone-900">

@@ -1,32 +1,75 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useCart } from '../../context/CartContext';
 import { useAuth } from '../../context/AuthContext';
-import { createOrder } from '../../services/api';
-import { Order } from '../../types';
-import { X, Trash2, ShoppingBag, ArrowRight, ShieldCheck, Phone, MapPin, Bike } from 'lucide-react';
+import { createOrder, fetchDeliveryZones, fetchStoreStatus } from '../../services/api';
+import { Order, DeliveryZone } from '../../types';
+import { X, Trash2, ShoppingBag, ArrowRight, ShieldCheck, Phone, MapPin, Bike, Clock, AlertTriangle, AlertCircle } from 'lucide-react';
 
 interface CartDrawerProps {
   onOrderPlaced: (order: Order) => void;
 }
 
 export const CartDrawer: React.FC<CartDrawerProps> = ({ onOrderPlaced }) => {
-  const { items, subtotal, deliveryFee, totalAmount, isCartOpen, setIsCartOpen, removeItem, updateQuantity, clearCart } = useCart();
+  const { items, subtotal, deliveryFee: defaultDeliveryFee, isCartOpen, setIsCartOpen, removeItem, updateQuantity, clearCart } = useCart();
   const { currentUser } = useAuth();
+
+  const [zones, setZones] = useState<DeliveryZone[]>([]);
+  const [selectedZoneId, setSelectedZoneId] = useState<string>('');
+  const [storeStatus, setStoreStatus] = useState<{
+    isOpen: boolean;
+    message?: string;
+    openingTime: string;
+    closingTime: string;
+    tunisTime: string;
+  } | null>(null);
 
   const [isCheckingOut, setIsCheckingOut] = useState(false);
   const [clientName, setClientName] = useState(currentUser.name || '');
   const [clientPhone, setClientPhone] = useState(currentUser.rawPhone || currentUser.phone || '+216 98 765 432');
-  const [deliveryAddress, setDeliveryAddress] = useState(currentUser.address || '14 Rue de la Liberté, El Menzah 6');
+  const [deliveryAddress, setDeliveryAddress] = useState(currentUser.address || '14 Rue de la Liberté');
   const [deliveryCity, setDeliveryCity] = useState(currentUser.city || 'Tunis');
   const [deliveryNotes, setDeliveryNotes] = useState('Sonner à l interphone 14, 2ème étage');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
 
+  useEffect(() => {
+    if (isCartOpen) {
+      fetchDeliveryZones()
+        .then(data => {
+          setZones(data);
+          if (data.length > 0 && !selectedZoneId) {
+            setSelectedZoneId(data[0].id);
+          }
+        })
+        .catch(console.error);
+
+      fetchStoreStatus()
+        .then(status => setStoreStatus(status))
+        .catch(console.error);
+    }
+  }, [isCartOpen]);
+
   if (!isCartOpen) return null;
+
+  const currentZone = zones.find(z => z.id === selectedZoneId) || zones[0];
+  const activeDeliveryFee = currentZone ? currentZone.deliveryFee : defaultDeliveryFee;
+  const effectiveTotal = parseFloat((subtotal + activeDeliveryFee).toFixed(2));
+  const isBelowMin = currentZone ? subtotal < currentZone.minOrderAmount : false;
+  const isStoreClosed = storeStatus && !storeStatus.isOpen;
 
   const handleSubmitOrder = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg('');
+
+    if (isStoreClosed) {
+      setErrorMsg(`Le restaurant est actuellement fermé. Horaires de commande : ${storeStatus?.openingTime || '10:00'} à ${storeStatus?.closingTime || '23:00'} (Heure de Tunis).`);
+      return;
+    }
+
+    if (isBelowMin && currentZone) {
+      setErrorMsg(`Le montant minimum de commande pour la zone ${currentZone.name} est de ${currentZone.minOrderAmount.toFixed(2)} DT.`);
+      return;
+    }
 
     if (!clientName.trim() || !clientPhone.trim() || !deliveryAddress.trim()) {
       setErrorMsg('Veuillez renseigner votre nom, téléphone et adresse de livraison.');
@@ -40,7 +83,9 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({ onOrderPlaced }) => {
         clientName: clientName.trim(),
         clientPhone: clientPhone.trim(),
         deliveryAddress: deliveryAddress.trim(),
-        deliveryCity: deliveryCity.trim(),
+        deliveryCity: currentZone ? currentZone.name : deliveryCity.trim(),
+        deliveryZoneId: currentZone?.id,
+        deliveryZoneName: currentZone?.name,
         deliveryNotes: deliveryNotes.trim(),
         items: items.map(item => ({
           productId: item.productId,
@@ -89,6 +134,19 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({ onOrderPlaced }) => {
 
         {/* Drawer Content */}
         <div className="flex-1 overflow-y-auto p-5">
+          {/* Store status warning */}
+          {isStoreClosed && (
+            <div className="mb-4 p-3.5 bg-rose-50 border border-rose-200 rounded-2xl flex items-start gap-2.5 text-rose-800 text-xs font-medium">
+              <AlertCircle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
+              <div>
+                <strong className="block text-rose-900">Le restaurant est actuellement fermé</strong>
+                <span>
+                  Nos fourneaux ouvrent de {storeStatus?.openingTime || '10:00'} à {storeStatus?.closingTime || '23:00'} (Heure de Tunis). Les commandes ne peuvent pas être validées en dehors de ces horaires.
+                </span>
+              </div>
+            </div>
+          )}
+
           {items.length === 0 ? (
             <div className="h-full flex flex-col items-center justify-center text-center text-stone-400 p-8">
               <div className="w-16 h-16 rounded-full bg-stone-100 flex items-center justify-center mb-4">
@@ -216,28 +274,41 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({ onOrderPlaced }) => {
                 </p>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block font-bold text-stone-700 mb-1">Gouvernorat / Ville *</label>
-                  <select
-                    value={deliveryCity}
-                    onChange={e => setDeliveryCity(e.target.value)}
-                    className="w-full p-2.5 border border-stone-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none"
-                  >
-                    <option value="Tunis">Tunis</option>
-                    <option value="Ariana">Ariana</option>
-                    <option value="La Marsa">La Marsa</option>
-                    <option value="Carthage">Carthage</option>
-                    <option value="Ben Arous">Ben Arous</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block font-bold text-stone-700 mb-1">Frais de livraison</label>
-                  <div className="p-2.5 bg-stone-100 border border-stone-200 rounded-xl font-bold font-mono text-emerald-700">
-                    5.00 DT (Fixe)
+              <div>
+                <label className="block font-bold text-stone-700 mb-1 flex items-center justify-between">
+                  <span>Zone de livraison (Tunis) *</span>
+                  {currentZone && (
+                    <span className="text-[10px] text-emerald-700 font-bold flex items-center gap-1">
+                      <Clock className="w-3 h-3" />
+                      ~{currentZone.estimatedMinutes} min
+                    </span>
+                  )}
+                </label>
+                <select
+                  value={selectedZoneId}
+                  onChange={e => setSelectedZoneId(e.target.value)}
+                  className="w-full p-2.5 border border-stone-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none text-xs font-medium"
+                >
+                  {zones.map(z => (
+                    <option key={z.id} value={z.id}>
+                      {z.name} — Frais: {z.deliveryFee.toFixed(2)} DT (Min: {z.minOrderAmount.toFixed(2)} DT)
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Minimum order amount warning */}
+              {isBelowMin && currentZone && (
+                <div className="p-3 bg-amber-50 border border-amber-300 rounded-xl text-amber-900 text-xs flex items-start gap-2">
+                  <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                  <div>
+                    <strong>Minimum de commande non atteint pour {currentZone.name}</strong>
+                    <div className="text-[11px] text-amber-700 mt-0.5">
+                      Le montant minimum est de <strong>{currentZone.minOrderAmount.toFixed(2)} DT</strong>. Veuillez ajouter encore <strong>{(currentZone.minOrderAmount - subtotal).toFixed(2)} DT</strong> de plats sains à votre panier.
+                    </div>
                   </div>
                 </div>
-              </div>
+              )}
 
               <div>
                 <label className="block font-bold text-stone-700 mb-1">Adresse exacte de livraison *</label>
@@ -288,21 +359,22 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({ onOrderPlaced }) => {
                 <span className="font-mono">{subtotal.toFixed(2)} DT</span>
               </div>
               <div className="flex justify-between text-stone-600">
-                <span>Livraison</span>
-                <span className="font-mono">{deliveryFee.toFixed(2)} DT</span>
+                <span>Livraison ({currentZone?.name || 'Tunis'})</span>
+                <span className="font-mono">{activeDeliveryFee.toFixed(2)} DT</span>
               </div>
               <div className="flex justify-between text-sm font-black text-stone-900 pt-2 border-t border-stone-200">
                 <span>Total à régler (COD)</span>
-                <span className="font-mono text-emerald-600 text-base">{totalAmount.toFixed(2)} DT</span>
+                <span className="font-mono text-emerald-600 text-base">{effectiveTotal.toFixed(2)} DT</span>
               </div>
             </div>
 
             {!isCheckingOut ? (
               <button
                 onClick={() => setIsCheckingOut(true)}
-                className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3.5 px-4 rounded-xl text-sm flex items-center justify-center gap-2 shadow-md shadow-emerald-600/20 transition cursor-pointer"
+                disabled={Boolean(isStoreClosed)}
+                className="w-full bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold py-3.5 px-4 rounded-xl text-sm flex items-center justify-center gap-2 shadow-md shadow-emerald-600/20 transition cursor-pointer"
               >
-                <span>Commander maintenant</span>
+                <span>{isStoreClosed ? 'Restaurant fermé' : 'Commander maintenant'}</span>
                 <ArrowRight className="w-4 h-4" />
               </button>
             ) : (
@@ -317,13 +389,17 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({ onOrderPlaced }) => {
                 <button
                   form="checkout-form"
                   type="submit"
-                  disabled={isSubmitting}
+                  disabled={isSubmitting || isBelowMin || Boolean(isStoreClosed)}
                   className="flex-1 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold py-3 px-4 rounded-xl text-xs flex items-center justify-center gap-2 shadow-md shadow-emerald-600/20 transition cursor-pointer"
                 >
                   {isSubmitting ? (
                     <span>Envoi de votre commande...</span>
+                  ) : isStoreClosed ? (
+                    <span>Restaurant fermé</span>
+                  ) : isBelowMin ? (
+                    <span>Min. {currentZone?.minOrderAmount} DT non atteint</span>
                   ) : (
-                    <span>Confirmer la commande ({totalAmount.toFixed(2)} DT)</span>
+                    <span>Confirmer la commande ({effectiveTotal.toFixed(2)} DT)</span>
                   )}
                 </button>
               </div>

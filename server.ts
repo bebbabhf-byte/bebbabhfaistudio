@@ -35,11 +35,72 @@ import {
   Supplier,
   SystemNotification,
   AppSettings,
-  NotificationType
+  NotificationType,
+  DeliveryZone,
+  CashClosingRecord,
+  PhysicalInventoryCheck
 } from './src/types';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// Initial Delivery Zones (§3, §4)
+const INITIAL_DELIVERY_ZONES: DeliveryZone[] = [
+  {
+    id: 'zone_lac',
+    name: 'Les Berges du Lac 1 & 2',
+    active: true,
+    deliveryFee: 4.0,
+    minOrderAmount: 15.0,
+    estimatedMinutes: 25,
+    description: 'Lac 1, Lac 2, Berges du Lac - Hub Central BEBBA'
+  },
+  {
+    id: 'zone_marsa',
+    name: 'La Marsa, Gammarth & Sidi Bou Saïd',
+    active: true,
+    deliveryFee: 6.0,
+    minOrderAmount: 20.0,
+    estimatedMinutes: 35,
+    description: 'Banlieue Nord'
+  },
+  {
+    id: 'zone_carthage',
+    name: 'Carthage, Le Kram & La Goulette',
+    active: true,
+    deliveryFee: 5.0,
+    minOrderAmount: 20.0,
+    estimatedMinutes: 30,
+    description: 'Zone côtière historique'
+  },
+  {
+    id: 'zone_menzah',
+    name: 'Menzah, Ennasr & Centre Urbain Nord',
+    active: true,
+    deliveryFee: 5.0,
+    minOrderAmount: 20.0,
+    estimatedMinutes: 30,
+    description: 'Quartiers d affaires et résidences'
+  },
+  {
+    id: 'zone_centre',
+    name: 'Tunis Centre, Lafayette & Mutuelleville',
+    active: true,
+    deliveryFee: 5.0,
+    minOrderAmount: 20.0,
+    estimatedMinutes: 35,
+    description: 'Centre-ville'
+  },
+  {
+    id: 'zone_ariana',
+    name: 'Ariana & La Soukra',
+    active: true,
+    deliveryFee: 6.0,
+    minOrderAmount: 25.0,
+    estimatedMinutes: 40,
+    description: 'Ariana Ville, Soukra'
+  }
+];
 
 // In-Memory Database with disk persistence
 interface DBState {
@@ -57,6 +118,9 @@ interface DBState {
   stockMovements: StockMovement[];
   notifications: SystemNotification[];
   settings: AppSettings;
+  deliveryZones: DeliveryZone[];
+  cashClosings: CashClosingRecord[];
+  inventoryChecks: PhysicalInventoryCheck[];
 }
 
 const db: DBState = {
@@ -73,7 +137,10 @@ const db: DBState = {
   auditLogs: [...INITIAL_AUDIT_LOGS],
   stockMovements: [],
   notifications: [...INITIAL_NOTIFICATIONS],
-  settings: { ...INITIAL_SETTINGS }
+  settings: { ...INITIAL_SETTINGS, timezone: 'Africa/Tunis' },
+  deliveryZones: [...INITIAL_DELIVERY_ZONES],
+  cashClosings: [],
+  inventoryChecks: []
 };
 
 // SSE Subscribers
@@ -158,6 +225,68 @@ function normalizeTunisianPhone(phone: string): string {
     return `00216${digits}`;
   }
   return digits.length > 0 ? `00216${digits}` : '';
+}
+
+// Timezone Africa/Tunis calculation helper (§1.1)
+function getAfricaTunisTime() {
+  const now = new Date();
+  const formatter = new Intl.DateTimeFormat('fr-TN', {
+    timeZone: 'Africa/Tunis',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false
+  });
+  const parts = formatter.formatToParts(now);
+  const findPart = (t: string) => parts.find(p => p.type === t)?.value || '00';
+  const hour = parseInt(findPart('hour'), 10);
+  const minute = parseInt(findPart('minute'), 10);
+  return {
+    dateStr: `${findPart('year')}-${findPart('month')}-${findPart('day')}`,
+    timeStr: `${findPart('hour')}:${findPart('minute')}`,
+    hour,
+    minute,
+    formatted: `${findPart('day')}/${findPart('month')}/${findPart('year')} ${findPart('hour')}:${findPart('minute')}:${findPart('second')} (Africa/Tunis)`
+  };
+}
+
+// Store opening / closing validation (§2)
+function isStoreOpenNow(): { isOpen: boolean; message?: string } {
+  if (db.settings && db.settings.isStoreOpen === false) {
+    return {
+      isOpen: false,
+      message: 'Le restaurant BEBBA Healthy Food est exceptionnellement fermé par la direction.'
+    };
+  }
+
+  if (db.settings && db.settings.acceptingOrders === false) {
+    return {
+      isOpen: false,
+      message: 'La prise de commande en ligne est temporairement suspendue par la cuisine BEBBA.'
+    };
+  }
+
+  const tunis = getAfricaTunisTime();
+  const openTime = db.settings?.openingTime || '10:00';
+  const closeTime = db.settings?.closingTime || '23:00';
+  const [openH, openM] = openTime.split(':').map(Number);
+  const [closeH, closeM] = closeTime.split(':').map(Number);
+
+  const currentMinutes = tunis.hour * 60 + tunis.minute;
+  const openMinutes = openH * 60 + (openM || 0);
+  const closeMinutes = closeH * 60 + (closeM || 0);
+
+  if (currentMinutes < openMinutes || currentMinutes > closeMinutes) {
+    return {
+      isOpen: false,
+      message: `Le restaurant BEBBA est actuellement fermé. Horaires de commande autorisés : ${openTime} à ${closeTime} (Africa/Tunis).`
+    };
+  }
+
+  return { isOpen: true };
 }
 
 // Generate 8-character unique alphanumeric tracking token
@@ -257,6 +386,17 @@ async function startServer() {
   // Middleware
   app.use(express.json({ limit: '25mb' }));
   app.use(express.urlencoded({ extended: true, limit: '25mb' }));
+
+  // CORS & Preflight for API
+  app.use('/api', (req: Request, res: Response, next) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    if (req.method === 'OPTIONS') {
+      return res.sendStatus(204);
+    }
+    next();
+  });
 
   // SSE Real-time Endpoint
   app.get('/api/realtime', (req: Request, res: Response) => {
@@ -468,6 +608,117 @@ async function startServer() {
   });
 
   // ==========================================
+  // USERS & ROLES MANAGEMENT ROUTES (§2, §3, §25, §57, §60)
+  // ==========================================
+  app.get('/api/users', (req: Request, res: Response) => {
+    return res.json({ users: db.users });
+  });
+
+  app.post('/api/users', (req: Request, res: Response) => {
+    const { name, email, phone, role, address, city, governorate } = req.body;
+    if (!name || !phone || !role) {
+      return res.status(400).json({ error: 'Le nom, téléphone et rôle sont obligatoires.' });
+    }
+
+    const formattedPhone = normalizeTunisianPhone(phone);
+    const existing = db.users.find(u => u.phone === formattedPhone);
+    if (existing) {
+      return res.status(400).json({ error: 'Ce numéro de téléphone est déjà utilisé.' });
+    }
+
+    const newUser: User = {
+      id: `user_${role}_${Date.now()}`,
+      name: name.trim(),
+      email: email ? email.trim() : undefined,
+      phone: formattedPhone,
+      rawPhone: phone.trim(),
+      role,
+      address: address ? address.trim() : undefined,
+      city: city || 'Tunis',
+      governorate: governorate || 'Tunis',
+      status: 'active',
+      createdAt: new Date().toISOString()
+    };
+
+    db.users.push(newUser);
+
+    // If driver, also create driver profile
+    if (role === 'driver') {
+      const newDriver: DriverProfile = {
+        id: `drv_${Date.now()}`,
+        userId: newUser.id,
+        name: newUser.name,
+        phone: newUser.phone,
+        status: 'available',
+        completedDeliveriesToday: 0,
+        collectedAmountToday: 0
+      };
+      db.drivers.push(newDriver);
+    }
+
+    logAudit('UTILISATEUR_CREE', 'system', { id: 'admin', name: 'Super Admin', role: 'admin' }, `Création utilisateur : ${newUser.name} (${newUser.role})`);
+    broadcast('user_created', newUser);
+    return res.status(201).json({ user: newUser });
+  });
+
+  app.put('/api/users/:id', (req: Request, res: Response) => {
+    const user = db.users.find(u => u.id === req.params.id);
+    if (!user) return res.status(404).json({ error: 'Utilisateur introuvable' });
+
+    const { name, email, phone, role, status, address, city, governorate } = req.body;
+    if (name) user.name = name.trim();
+    if (email !== undefined) user.email = email.trim();
+    if (phone) {
+      user.phone = normalizeTunisianPhone(phone);
+      user.rawPhone = phone;
+    }
+    if (role) user.role = role;
+    if (status) user.status = status;
+    if (address !== undefined) user.address = address;
+    if (city) user.city = city;
+    if (governorate) user.governorate = governorate;
+
+    // Sync DriverProfile if driver
+    const driver = db.drivers.find(d => d.userId === user.id);
+    if (driver) {
+      if (name) driver.name = user.name;
+      if (phone) driver.phone = user.phone;
+      if (status === 'inactive' || status === 'suspended') driver.status = 'inactive';
+      else if (status === 'active' && (driver.status === 'inactive' || driver.status === 'suspended')) driver.status = 'available';
+    }
+
+    logAudit('UTILISATEUR_MODIFIE', 'system', { id: 'admin', name: 'Super Admin', role: 'admin' }, `Modification utilisateur : ${user.name} (Rôle: ${user.role}, Statut: ${user.status})`);
+    broadcast('user_updated', user);
+    return res.json({ user });
+  });
+
+  app.delete('/api/users/:id', (req: Request, res: Response) => {
+    const user = db.users.find(u => u.id === req.params.id);
+    if (!user) return res.status(404).json({ error: 'Utilisateur introuvable' });
+
+    // Soft delete / deactivate as per §79
+    user.status = 'inactive';
+    const driver = db.drivers.find(d => d.userId === user.id);
+    if (driver) {
+      driver.status = 'inactive';
+      if (driver.vehicleId) {
+        const v = db.vehicles.find(veh => veh.id === driver.vehicleId);
+        if (v) {
+          v.assignedDriverId = undefined;
+          v.assignedDriverName = undefined;
+          if (v.status === 'ASSIGNED') v.status = 'AVAILABLE';
+        }
+        driver.vehicleId = undefined;
+        driver.vehicleModel = undefined;
+        driver.vehiclePlate = undefined;
+      }
+    }
+    logAudit('UTILISATEUR_DESACTIVE', 'system', { id: 'admin', name: 'Super Admin', role: 'admin' }, `Désactivation de l utilisateur : ${user.name}`);
+    broadcast('user_updated', user);
+    return res.json({ success: true, user });
+  });
+
+  // ==========================================
   // CLIENTS MANAGEMENT ROUTES (§12)
   // ==========================================
   app.get('/api/clients', (req: Request, res: Response) => {
@@ -558,6 +809,12 @@ async function startServer() {
   });
 
   app.post('/api/orders', (req: Request, res: Response) => {
+    // 1. Verify restaurant opening status (§2)
+    const storeCheck = isStoreOpenNow();
+    if (!storeCheck.isOpen) {
+      return res.status(403).json({ error: storeCheck.message });
+    }
+
     const {
       clientId,
       clientName,
@@ -567,6 +824,7 @@ async function startServer() {
       deliveryNotes,
       deliveryLat,
       deliveryLng,
+      deliveryZoneId,
       items
     } = req.body;
 
@@ -576,7 +834,7 @@ async function startServer() {
 
     const formattedPhone = normalizeTunisianPhone(clientPhone);
 
-    // SERVER-SIDE TRUTH FOR PRICING
+    // SERVER-SIDE TRUTH FOR PRICING (§20, §21, §22)
     let subtotal = 0;
     const validatedItems = items.map((rawItem: any, index: number) => {
       const product = db.products.find(p => p.id === rawItem.productId);
@@ -603,6 +861,7 @@ async function startServer() {
       const itemTotal = (unitBasePrice + optionsDelta) * qty;
       subtotal += itemTotal;
 
+      // Preserve snapshot as per §11
       return {
         id: `item_${Date.now()}_${index}`,
         productId: product ? product.id : rawItem.productId,
@@ -612,15 +871,52 @@ async function startServer() {
         quantity: qty,
         selectedOptions: validatedOptions,
         itemTotal: parseFloat(itemTotal.toFixed(2)),
-        specialInstructions: rawItem.specialInstructions ? rawItem.specialInstructions.trim() : undefined
+        specialInstructions: rawItem.specialInstructions ? rawItem.specialInstructions.trim() : undefined,
+        recipeVersion: product?.recipeId ? 'v1.0' : undefined
       };
     });
 
-    // Fixed delivery fee or tiered based on zone (e.g. 5 DT for standard Tunis perimeter)
-    const deliveryFee = 5.0;
+    // 2. Zone matching & Minimum order amount (§3, §4)
+    let matchedZone = db.deliveryZones.find(z => z.id === deliveryZoneId);
+    if (!matchedZone) {
+      const addrCombined = `${deliveryAddress} ${deliveryCity || ''}`.toLowerCase();
+      matchedZone = db.deliveryZones.find(z =>
+        addrCombined.includes(z.name.toLowerCase()) ||
+        (z.id === 'zone_lac' && (addrCombined.includes('lac') || addrCombined.includes('berges'))) ||
+        (z.id === 'zone_marsa' && (addrCombined.includes('marsa') || addrCombined.includes('gammarth') || addrCombined.includes('sidi bou'))) ||
+        (z.id === 'zone_carthage' && (addrCombined.includes('carthage') || addrCombined.includes('kram') || addrCombined.includes('goulette'))) ||
+        (z.id === 'zone_menzah' && (addrCombined.includes('menzah') || addrCombined.includes('ennasr') || addrCombined.includes('urbain'))) ||
+        (z.id === 'zone_centre' && (addrCombined.includes('centre') || addrCombined.includes('lafayette') || addrCombined.includes('mutuelle'))) ||
+        (z.id === 'zone_ariana' && (addrCombined.includes('ariana') || addrCombined.includes('soukra')))
+      );
+    }
+
+    if (!matchedZone) {
+      matchedZone = db.deliveryZones[0]; // Default to Lac
+    }
+
+    if (!matchedZone.active) {
+      return res.status(400).json({ error: `La zone de livraison ${matchedZone.name} est temporairement fermée.` });
+    }
+
+    // Minimum order check (§4)
+    if (subtotal < matchedZone.minOrderAmount) {
+      return res.status(400).json({
+        error: `Montant minimum non atteint : ${matchedZone.minOrderAmount.toFixed(2)} DT requis pour ${matchedZone.name} (Panier actuel : ${subtotal.toFixed(2)} DT).`
+      });
+    }
+
+    // Free delivery threshold check
+    const freeDeliveryThreshold = db.settings?.freeDeliveryThreshold || 50.0;
+    const deliveryFee = subtotal >= freeDeliveryThreshold ? 0.0 : matchedZone.deliveryFee;
     const totalAmount = parseFloat((subtotal + deliveryFee).toFixed(2));
     const orderNumber = `BEBBA-2026-${1000 + db.orders.length + 1}`;
     const trackingToken = generateTrackingToken();
+
+    // ETA calculation (§5)
+    const prepMinutes = 20;
+    const transitMinutes = matchedZone.estimatedMinutes || 25;
+    const estimatedDeliveryTime = new Date(Date.now() + (prepMinutes + transitMinutes) * 60000).toISOString();
 
     const newOrder: Order = {
       id: `ord_${Date.now()}`,
@@ -629,10 +925,14 @@ async function startServer() {
       clientName: clientName.trim(),
       clientPhone: formattedPhone,
       deliveryAddress: deliveryAddress.trim(),
-      deliveryCity: deliveryCity || 'Tunis',
+      deliveryCity: deliveryCity || matchedZone.name,
       deliveryLat: deliveryLat || 36.8385,
       deliveryLng: deliveryLng || 10.1654,
       deliveryNotes: deliveryNotes ? deliveryNotes.trim() : undefined,
+      deliveryZoneId: matchedZone.id,
+      deliveryZoneName: matchedZone.name,
+      estimatedDeliveryTime,
+      priority: 'normal',
       items: validatedItems,
       subtotal: parseFloat(subtotal.toFixed(2)),
       deliveryFee,
@@ -650,13 +950,13 @@ async function startServer() {
       id: newOrder.clientId || 'guest',
       name: newOrder.clientName,
       role: 'client'
-    }, `Création commande ${orderNumber} - Montant total: ${totalAmount} DT (COD)`);
+    }, `Création commande ${orderNumber} - Zone: ${matchedZone.name} - Montant total: ${totalAmount} DT (COD)`);
 
     broadcast('order_created', newOrder);
     return res.status(201).json({ order: newOrder });
   });
 
-  // State transitions with strict backend rules
+  // State transitions with strict backend rules & KDS duration timestamps (§28, §29)
   app.patch('/api/orders/:id/status', (req: Request, res: Response) => {
     const { id } = req.params;
     const { nextStatus, performedByUserId, performedByName, performedByRole } = req.body;
@@ -695,11 +995,13 @@ async function startServer() {
 
     if (nextStatus === 'preparing') {
       order.preparedAt = now;
+      order.prepStartedAt = now;
       // Auto consume recipe ingredients from stock transactionally!
       consumeIngredientsForOrder(order, userRef.name);
       logAudit('CUISINE_PREPARATION', 'kitchen', userRef, `Début préparation & déstockage ingrédients pour ${order.orderNumber}`);
     } else if (nextStatus === 'ready') {
       order.readyAt = now;
+      order.prepCompletedAt = now;
       logAudit('COMMANDE_PRETE', 'kitchen', userRef, `Commande ${order.orderNumber} prête pour expédition`);
     } else if (nextStatus === 'delivering') {
       // Driver started delivery
@@ -718,6 +1020,33 @@ async function startServer() {
       order.deliveredAt = now;
       logAudit('COMMANDE_LIVREE', 'delivery', userRef, `Commande ${order.orderNumber} remise au client`);
     }
+
+    broadcast('order_status_updated', order);
+    return res.json({ order });
+  });
+
+  // Modify Order Priority (§6)
+  app.patch('/api/orders/:id/priority', (req: Request, res: Response) => {
+    const { id } = req.params;
+    const { priority, reason, adminName } = req.body;
+
+    const order = db.orders.find(o => o.id === id);
+    if (!order) return res.status(404).json({ error: 'Commande non trouvée' });
+    if (!reason || reason.trim().length === 0) {
+      return res.status(400).json({ error: 'Le motif de modification de priorité est obligatoire (§6).' });
+    }
+
+    const oldPriority = order.priority || 'normal';
+    order.priority = priority;
+    order.priorityReason = reason.trim();
+    order.updatedAt = new Date().toISOString();
+
+    logAudit(
+      'PRIORITE_COMMANDE_MODIFIEE',
+      'order',
+      { id: 'admin', name: adminName || 'Admin', role: 'admin' },
+      `Priorité commande ${order.orderNumber} changée de [${oldPriority}] à [${priority}]. Motif : ${reason.trim()}`
+    );
 
     broadcast('order_status_updated', order);
     return res.json({ order });
@@ -921,17 +1250,36 @@ async function startServer() {
   // Confirm Cash On Delivery payment collection
   app.post('/api/orders/:id/collect-payment', (req: Request, res: Response) => {
     const { id } = req.params;
-    const { collectedAmount, collectorName, collectorUserId, collectorRole } = req.body;
+    const { collectedAmount, collectorName, collectorUserId, collectorRole, performedBy } = req.body;
 
     const order = db.orders.find(o => o.id === id);
     if (!order) {
       return res.status(404).json({ error: 'Commande non trouvée' });
     }
 
-    const amount = collectedAmount !== undefined ? parseFloat(collectedAmount) : order.totalAmount;
+    const role = (collectorRole || (performedBy && performedBy.role) || '').toLowerCase();
+    const isDriver = role === 'driver' || (!role && order.assignedDriverId);
+
+    // RÈGLE MÉTIER STRICTE : L'encaissement par le livreur ne doit passer que si la livraison est confirmée (statut "delivered")
+    if (isDriver && order.orderStatus !== 'delivered') {
+      return res.status(400).json({
+        error: 'L\'encaissement par le livreur ne peut être validé que si la livraison est confirmée (statut "Livrée"). Veuillez d\'abord confirmer la livraison au client.'
+      });
+    }
+
+    if (order.paymentStatus === 'paid') {
+      return res.status(400).json({ error: 'Cette commande a déjà été encaissée.' });
+    }
+
+    if (order.orderStatus === 'cancelled') {
+      return res.status(400).json({ error: 'Impossible d\'encaisser une commande annulée.' });
+    }
+
+    const rawAmount = collectedAmount !== undefined ? collectedAmount : (req.body.amount !== undefined ? req.body.amount : order.totalAmount);
+    const amount = parseFloat(rawAmount);
     order.paymentStatus = 'paid';
     order.paidAt = new Date().toISOString();
-    order.paidBy = collectorName || 'Livreur Bebba';
+    order.paidBy = collectorName || (performedBy && performedBy.name) || 'Livreur Bebba';
     order.collectedAmount = amount;
     order.updatedAt = new Date().toISOString();
 
@@ -947,10 +1295,10 @@ async function startServer() {
     }
 
     logAudit('ENCAISSEMENT_CONFIRME', 'delivery', {
-      id: collectorUserId || 'driver',
-      name: collectorName || 'Livreur',
-      role: collectorRole || 'driver'
-    }, `Encaissement COD de ${amount} DT pour ${order.orderNumber} (${order.paymentStatus})`);
+      id: collectorUserId || (performedBy && performedBy.id) || 'driver',
+      name: collectorName || (performedBy && performedBy.name) || 'Livreur',
+      role: collectorRole || (performedBy && performedBy.role) || 'driver'
+    }, `Encaissement COD de ${amount} DT pour ${order.orderNumber} (Livraison confirmée)`);
 
     broadcast('order_payment_collected', order);
     return res.json({ order });
@@ -1307,6 +1655,133 @@ async function startServer() {
     return res.json({ movements: db.stockMovements });
   });
 
+  // Enregistrer Pertes et Gaspillage (§33)
+  app.post('/api/stock/waste', (req: Request, res: Response) => {
+    const { ingredientId, quantity, unit, reason, wasteType, performedBy } = req.body;
+    const ing = db.ingredients.find(i => i.id === ingredientId);
+    if (!ing) return res.status(404).json({ error: 'Ingrédient introuvable' });
+
+    const qty = parseFloat(quantity);
+    if (isNaN(qty) || qty <= 0) {
+      return res.status(400).json({ error: 'Quantité de perte invalide' });
+    }
+    if (!reason || reason.trim().length === 0) {
+      return res.status(400).json({ error: 'Le motif de la perte/gaspillage est obligatoire (§33).' });
+    }
+
+    const before = ing.currentStock;
+    ing.currentStock = Math.max(0, parseFloat((ing.currentStock - qty).toFixed(3)));
+    if (ing.currentStock === 0) ing.status = 'out_of_stock';
+    else if (ing.currentStock <= ing.minThreshold) ing.status = 'low';
+
+    const movement: StockMovement = {
+      id: `mov_waste_${Date.now()}`,
+      ingredientId: ing.id,
+      ingredientName: ing.name,
+      type: 'waste',
+      quantityDelta: -qty,
+      unit: unit || ing.unit,
+      beforeQuantity: before,
+      afterQuantity: ing.currentStock,
+      unitCost: ing.unitCost,
+      reason: `[${(wasteType || 'perte').toUpperCase()}] ${reason.trim()}`,
+      performedBy: performedBy || 'Responsable Cuisine',
+      createdAt: new Date().toISOString()
+    };
+
+    db.stockMovements.unshift(movement);
+
+    logAudit(
+      'PERTE_STOCK_DECLAREE',
+      'stock',
+      { id: 'stock_admin', name: performedBy || 'Responsable Cuisine', role: 'admin' },
+      `Déclaration de perte pour ${ing.name} : -${qty} ${ing.unit} (Motif: ${reason.trim()})`
+    );
+
+    broadcast('stock_updated', { ingredient: ing, movement });
+    return res.status(201).json({ success: true, ingredient: ing, movement });
+  });
+
+  // Inventaire physique et ajustement de stock (§34)
+  app.post('/api/inventory/reconcile', (req: Request, res: Response) => {
+    const { countedItems, conductedBy, notes } = req.body;
+    if (!countedItems || !Array.isArray(countedItems) || countedItems.length === 0) {
+      return res.status(400).json({ error: 'Liste d inventaire compté obligatoire.' });
+    }
+
+    const checkItems: any[] = [];
+    let totalCostImpact = 0;
+
+    for (const item of countedItems) {
+      const ing = db.ingredients.find(i => i.id === item.ingredientId);
+      if (!ing) continue;
+
+      const countedStock = parseFloat(item.countedStock);
+      if (isNaN(countedStock) || countedStock < 0) continue;
+
+      const theoretical = ing.currentStock;
+      const difference = parseFloat((countedStock - theoretical).toFixed(3));
+      const costImpact = parseFloat((difference * ing.unitCost).toFixed(2));
+      totalCostImpact += costImpact;
+
+      checkItems.push({
+        ingredientId: ing.id,
+        ingredientName: ing.name,
+        unit: ing.unit,
+        theoreticalStock: theoretical,
+        countedStock,
+        difference,
+        unitCost: ing.unitCost,
+        costImpact
+      });
+
+      // Apply adjustment movement if there is a discrepancy
+      if (difference !== 0) {
+        ing.currentStock = countedStock;
+        if (ing.currentStock === 0) ing.status = 'out_of_stock';
+        else if (ing.currentStock <= ing.minThreshold) ing.status = 'low';
+        else ing.status = 'optimal';
+
+        const adjMov: StockMovement = {
+          id: `mov_inv_${Date.now()}_${ing.id}`,
+          ingredientId: ing.id,
+          ingredientName: ing.name,
+          type: 'adjustment',
+          quantityDelta: difference,
+          unit: ing.unit,
+          beforeQuantity: theoretical,
+          afterQuantity: countedStock,
+          unitCost: ing.unitCost,
+          reason: `Ajustement inventaire physique (${difference > 0 ? '+' : ''}${difference} ${ing.unit})`,
+          performedBy: conductedBy || 'Responsable Inventaire',
+          createdAt: new Date().toISOString()
+        };
+        db.stockMovements.unshift(adjMov);
+      }
+    }
+
+    const checkRecord: PhysicalInventoryCheck = {
+      id: `inv_${Date.now()}`,
+      date: new Date().toISOString(),
+      conductedBy: conductedBy || 'Responsable Inventaire',
+      items: checkItems,
+      totalCostImpact: parseFloat(totalCostImpact.toFixed(2)),
+      status: 'adjusted'
+    };
+
+    db.inventoryChecks.unshift(checkRecord);
+
+    logAudit(
+      'INVENTAIRE_PHYSIQUE_VALIDE',
+      'stock',
+      { id: 'stock_admin', name: conductedBy || 'Responsable Inventaire', role: 'admin' },
+      `Validation inventaire physique (${checkItems.length} articles vérifiés). Écart financier total : ${totalCostImpact >= 0 ? '+' : ''}${totalCostImpact.toFixed(2)} DT. Notes: ${notes || 'Aucune'}`
+    );
+
+    broadcast('inventory_reconciled', checkRecord);
+    return res.status(201).json({ success: true, checkRecord });
+  });
+
   // ==========================================
   // RECIPES MANAGEMENT (§17, §18)
   // ==========================================
@@ -1467,8 +1942,15 @@ async function startServer() {
       year: year || '2025'
     };
 
+    if (driver) {
+      driver.vehicleId = newVehicle.id;
+      driver.vehicleModel = newVehicle.model;
+      driver.vehiclePlate = newVehicle.licensePlate;
+    }
+
     db.vehicles.push(newVehicle);
-    logAudit('VEHICULE_CREE', 'system', { id: 'admin', name: 'Admin', role: 'admin' }, `Nouveau véhicule : ${newVehicle.model} (${newVehicle.licensePlate})`);
+    logAudit('VEHICULE_CREE', 'delivery', { id: 'admin', name: 'Admin Flotte', role: 'admin' }, `Nouveau véhicule : ${newVehicle.model} (${newVehicle.licensePlate}) - Type: ${newVehicle.type}`);
+    broadcast('vehicle_updated', newVehicle);
     return res.status(201).json({ vehicle: newVehicle });
   });
 
@@ -1484,11 +1966,81 @@ async function startServer() {
     if (status !== undefined) veh.status = status;
 
     if (assignedDriverId !== undefined) {
-      const driver = db.drivers.find(d => d.id === assignedDriverId || d.userId === assignedDriverId);
-      veh.assignedDriverId = driver ? driver.userId : undefined;
-      veh.assignedDriverName = driver ? driver.name : undefined;
+      // If previous driver was assigned, clear their vehicle
+      if (veh.assignedDriverId) {
+        const prevDriver = db.drivers.find(d => d.userId === veh.assignedDriverId || d.id === veh.assignedDriverId);
+        if (prevDriver && prevDriver.vehicleId === veh.id) {
+          prevDriver.vehicleId = undefined;
+          prevDriver.vehicleModel = undefined;
+          prevDriver.vehiclePlate = undefined;
+        }
+      }
+
+      if (assignedDriverId) {
+        const driver = db.drivers.find(d => d.id === assignedDriverId || d.userId === assignedDriverId);
+        if (driver) {
+          veh.assignedDriverId = driver.userId;
+          veh.assignedDriverName = driver.name;
+          if (veh.status === 'AVAILABLE') veh.status = 'ASSIGNED';
+          driver.vehicleId = veh.id;
+          driver.vehicleModel = veh.model;
+          driver.vehiclePlate = veh.licensePlate;
+        }
+      } else {
+        veh.assignedDriverId = undefined;
+        veh.assignedDriverName = undefined;
+        if (veh.status === 'ASSIGNED') veh.status = 'AVAILABLE';
+      }
     }
 
+    logAudit('VEHICULE_MODIFIE', 'delivery', { id: 'admin', name: 'Admin Flotte', role: 'admin' }, `Modification véhicule : ${veh.model} (${veh.licensePlate})`);
+    broadcast('vehicle_updated', veh);
+    return res.json({ vehicle: veh });
+  });
+
+  app.delete('/api/vehicles/:id', (req: Request, res: Response) => {
+    const idx = db.vehicles.findIndex(v => v.id === req.params.id);
+    if (idx === -1) return res.status(404).json({ error: 'Véhicule non trouvé' });
+
+    const veh = db.vehicles[idx];
+    // Free any assigned driver
+    const driver = db.drivers.find(d => d.vehicleId === veh.id || d.userId === veh.assignedDriverId);
+    if (driver) {
+      driver.vehicleId = undefined;
+      driver.vehicleModel = undefined;
+      driver.vehiclePlate = undefined;
+    }
+
+    db.vehicles.splice(idx, 1);
+    logAudit('VEHICULE_SUPPRIME', 'delivery', { id: 'admin', name: 'Admin Flotte', role: 'admin' }, `Suppression véhicule : ${veh.model} (${veh.licensePlate})`);
+    broadcast('vehicle_deleted', { vehicleId: veh.id });
+    return res.json({ success: true, vehicleId: veh.id });
+  });
+
+  app.patch('/api/vehicles/:id/toggle-active', (req: Request, res: Response) => {
+    const veh = db.vehicles.find(v => v.id === req.params.id);
+    if (!veh) return res.status(404).json({ error: 'Véhicule non trouvé' });
+
+    const isCurrentlyInactive = veh.status === 'INACTIVE' || veh.status === 'inactive';
+    if (isCurrentlyInactive) {
+      veh.status = veh.assignedDriverId ? 'ASSIGNED' : 'AVAILABLE';
+    } else {
+      veh.status = 'INACTIVE';
+      // Free driver if currently inactive
+      if (veh.assignedDriverId) {
+        const driver = db.drivers.find(d => d.userId === veh.assignedDriverId || d.id === veh.assignedDriverId);
+        if (driver) {
+          driver.vehicleId = undefined;
+          driver.vehicleModel = undefined;
+          driver.vehiclePlate = undefined;
+        }
+        veh.assignedDriverId = undefined;
+        veh.assignedDriverName = undefined;
+      }
+    }
+
+    logAudit('VEHICULE_STATUT_CHANGE', 'delivery', { id: 'admin', name: 'Admin Flotte', role: 'admin' }, `Véhicule ${veh.model} (${veh.licensePlate}) passé à ${veh.status}`);
+    broadcast('vehicle_updated', veh);
     return res.json({ vehicle: veh });
   });
 
@@ -1543,6 +2095,118 @@ async function startServer() {
     logAudit('LIVREUR_CREE', 'delivery', { id: 'admin', name: 'Admin', role: 'admin' }, `Nouveau livreur créé : ${newDriver.name} (${newDriver.phone})`);
     broadcast('driver_updated', newDriver);
     return res.status(201).json({ driver: newDriver });
+  });
+
+  app.put('/api/drivers/:id', (req: Request, res: Response) => {
+    const driver = db.drivers.find(d => d.id === req.params.id || d.userId === req.params.id);
+    if (!driver) return res.status(404).json({ error: 'Livreur non trouvé' });
+
+    const { name, phone, email, vehicleId, status } = req.body;
+    if (name) driver.name = name.trim();
+    if (phone) driver.phone = normalizeTunisianPhone(phone);
+    if (status) driver.status = status;
+
+    // Handle vehicle assignment changes
+    if (vehicleId !== undefined) {
+      // Clear previous vehicle if different
+      if (driver.vehicleId && driver.vehicleId !== vehicleId) {
+        const oldVeh = db.vehicles.find(v => v.id === driver.vehicleId);
+        if (oldVeh) {
+          oldVeh.assignedDriverId = undefined;
+          oldVeh.assignedDriverName = undefined;
+          if (oldVeh.status === 'ASSIGNED') oldVeh.status = 'AVAILABLE';
+        }
+      }
+
+      if (vehicleId) {
+        const newVeh = db.vehicles.find(v => v.id === vehicleId);
+        if (newVeh) {
+          driver.vehicleId = newVeh.id;
+          driver.vehicleModel = newVeh.model;
+          driver.vehiclePlate = newVeh.licensePlate;
+          newVeh.assignedDriverId = driver.userId;
+          newVeh.assignedDriverName = driver.name;
+          newVeh.status = 'ASSIGNED';
+        }
+      } else {
+        driver.vehicleId = undefined;
+        driver.vehicleModel = undefined;
+        driver.vehiclePlate = undefined;
+      }
+    }
+
+    // Update corresponding user in db.users
+    const user = db.users.find(u => u.id === driver.userId || u.phone === driver.phone);
+    if (user) {
+      if (name) user.name = name.trim();
+      if (phone) {
+        user.phone = driver.phone;
+        user.rawPhone = phone.trim();
+      }
+      if (email !== undefined) user.email = email ? email.trim() : undefined;
+      if (status === 'inactive' || status === 'suspended') user.status = 'suspended';
+      else if (status === 'available') user.status = 'active';
+    }
+
+    logAudit('LIVREUR_MODIFIE', 'delivery', { id: 'admin', name: 'Admin', role: 'admin' }, `Mise à jour livreur : ${driver.name} (${driver.phone})`);
+    broadcast('driver_updated', driver);
+    return res.json({ driver });
+  });
+
+  app.delete('/api/drivers/:id', (req: Request, res: Response) => {
+    const idx = db.drivers.findIndex(d => d.id === req.params.id || d.userId === req.params.id);
+    if (idx === -1) return res.status(404).json({ error: 'Livreur non trouvé' });
+
+    const driver = db.drivers[idx];
+
+    // Free assigned vehicle
+    if (driver.vehicleId) {
+      const veh = db.vehicles.find(v => v.id === driver.vehicleId);
+      if (veh) {
+        veh.assignedDriverId = undefined;
+        veh.assignedDriverName = undefined;
+        if (veh.status === 'ASSIGNED') veh.status = 'AVAILABLE';
+      }
+    }
+
+    // Check if driver has active orders
+    const activeOrders = db.orders.filter(
+      o => o.assignedDriverId === driver.userId && (o.orderStatus === 'delivering' || o.orderStatus === 'waiting_for_driver')
+    );
+    for (const ord of activeOrders) {
+      ord.assignedDriverId = undefined;
+      ord.assignedDriverName = undefined;
+      ord.assignedDriverPhone = undefined;
+      ord.orderStatus = 'waiting_for_driver';
+    }
+
+    // Update user status
+    const user = db.users.find(u => u.id === driver.userId);
+    if (user) {
+      user.status = 'inactive';
+    }
+
+    db.drivers.splice(idx, 1);
+    logAudit('LIVREUR_SUPPRIME', 'delivery', { id: 'admin', name: 'Admin', role: 'admin' }, `Suppression du livreur : ${driver.name} (${driver.phone})`);
+    broadcast('driver_deleted', { driverId: driver.id, userId: driver.userId });
+    return res.json({ success: true, driverId: driver.id });
+  });
+
+  app.patch('/api/drivers/:id/toggle-active', (req: Request, res: Response) => {
+    const driver = db.drivers.find(d => d.id === req.params.id || d.userId === req.params.id);
+    if (!driver) return res.status(404).json({ error: 'Livreur non trouvé' });
+
+    const isCurrentlyInactive = driver.status === 'inactive' || driver.status === 'suspended';
+    driver.status = isCurrentlyInactive ? 'available' : 'inactive';
+
+    const user = db.users.find(u => u.id === driver.userId);
+    if (user) {
+      user.status = isCurrentlyInactive ? 'active' : 'suspended';
+    }
+
+    logAudit('LIVREUR_STATUT_CHANGE', 'delivery', { id: 'admin', name: 'Admin', role: 'admin' }, `Livreur ${driver.name} passé à ${driver.status}`);
+    broadcast('driver_updated', driver);
+    return res.json({ driver });
   });
 
   app.patch('/api/drivers/:id/status', (req: Request, res: Response) => {
@@ -1618,6 +2282,198 @@ async function startServer() {
     logAudit('PARAMETRES_MODIFIES', 'system', { id: 'admin', name: 'Admin', role: 'admin' }, 'Mise à jour des paramètres système BEBBA');
     broadcast('settings_updated', db.settings);
     return res.json({ settings: db.settings });
+  });
+
+  // ==========================================
+  // STORE STATUS & BUSINESS HOURS (§1, §2)
+  // ==========================================
+  app.get('/api/store/status', (req: Request, res: Response) => {
+    const tunisTime = getAfricaTunisTime();
+    const status = isStoreOpenNow();
+    return res.json({
+      isOpen: status.isOpen,
+      message: status.message,
+      timezone: 'Africa/Tunis',
+      tunisTime: tunisTime.formatted,
+      currentTime: tunisTime.timeStr,
+      currentDate: tunisTime.dateStr,
+      openingTime: db.settings?.openingTime || '10:00',
+      closingTime: db.settings?.closingTime || '23:00',
+      isStoreOpen: db.settings?.isStoreOpen !== false,
+      acceptingOrders: db.settings?.acceptingOrders !== false
+    });
+  });
+
+  // ==========================================
+  // DELIVERY ZONES (§3, §4)
+  // ==========================================
+  app.get('/api/delivery-zones', (req: Request, res: Response) => {
+    return res.json({ zones: db.deliveryZones });
+  });
+
+  app.post('/api/delivery-zones', (req: Request, res: Response) => {
+    const { name, deliveryFee, minOrderAmount, estimatedMinutes, description } = req.body;
+    if (!name) return res.status(400).json({ error: 'Le nom de la zone est obligatoire.' });
+
+    const newZone: DeliveryZone = {
+      id: `zone_${Date.now()}`,
+      name: name.trim(),
+      active: true,
+      deliveryFee: parseFloat(deliveryFee) || 5.0,
+      minOrderAmount: parseFloat(minOrderAmount) || 20.0,
+      estimatedMinutes: parseInt(estimatedMinutes, 10) || 30,
+      description: description ? description.trim() : undefined
+    };
+
+    db.deliveryZones.push(newZone);
+    logAudit('ZONE_LIVRAISON_CREEE', 'system', { id: 'admin', name: 'Admin', role: 'admin' }, `Nouvelle zone de livraison ajoutée : ${newZone.name}`);
+    broadcast('zones_updated', db.deliveryZones);
+    return res.status(201).json({ zone: newZone });
+  });
+
+  app.put('/api/delivery-zones/:id', (req: Request, res: Response) => {
+    const zone = db.deliveryZones.find(z => z.id === req.params.id);
+    if (!zone) return res.status(404).json({ error: 'Zone de livraison non trouvée' });
+
+    const { name, active, deliveryFee, minOrderAmount, estimatedMinutes, description } = req.body;
+    if (name) zone.name = name.trim();
+    if (active !== undefined) zone.active = Boolean(active);
+    if (deliveryFee !== undefined) zone.deliveryFee = parseFloat(deliveryFee);
+    if (minOrderAmount !== undefined) zone.minOrderAmount = parseFloat(minOrderAmount);
+    if (estimatedMinutes !== undefined) zone.estimatedMinutes = parseInt(estimatedMinutes, 10);
+    if (description !== undefined) zone.description = description.trim();
+
+    logAudit('ZONE_LIVRAISON_MODIFIEE', 'system', { id: 'admin', name: 'Admin', role: 'admin' }, `Modification zone de livraison : ${zone.name}`);
+    broadcast('zones_updated', db.deliveryZones);
+    return res.json({ zone });
+  });
+
+  // ==========================================
+  // CASH REGISTER RECONCILIATION & CLOSING (§25, §26)
+  // ==========================================
+  app.get('/api/cash-register/reconciliation', (req: Request, res: Response) => {
+    const tunisTime = getAfricaTunisTime();
+
+    // Delivered orders to collect or collected
+    const relevantOrders = db.orders.filter(o => o.orderStatus === 'delivered' || o.paymentStatus === 'paid');
+    const theoreticalAmount = relevantOrders.reduce((sum, o) => sum + (o.collectedAmount || o.totalAmount), 0);
+    const paidOrders = relevantOrders.filter(o => o.paymentStatus === 'paid');
+    const paidAmount = paidOrders.reduce((sum, o) => sum + (o.collectedAmount || o.totalAmount), 0);
+    const pendingOrders = relevantOrders.filter(o => o.paymentStatus === 'to_collect');
+    const pendingAmount = pendingOrders.reduce((sum, o) => sum + o.totalAmount, 0);
+
+    // Group by driver
+    const driverSummary: Record<string, { driverId: string; driverName: string; count: number; totalToCollect: number; totalCollected: number }> = {};
+    relevantOrders.forEach(o => {
+      const dId = o.assignedDriverId || 'unassigned';
+      const dName = o.assignedDriverName || 'Sans livreur';
+      if (!driverSummary[dId]) {
+        driverSummary[dId] = { driverId: dId, driverName: dName, count: 0, totalToCollect: 0, totalCollected: 0 };
+      }
+      driverSummary[dId].count += 1;
+      if (o.paymentStatus === 'paid') {
+        driverSummary[dId].totalCollected += (o.collectedAmount || o.totalAmount);
+      } else {
+        driverSummary[dId].totalToCollect += o.totalAmount;
+      }
+    });
+
+    return res.json({
+      periodDate: tunisTime.dateStr,
+      timezone: 'Africa/Tunis',
+      theoreticalAmount: parseFloat(theoreticalAmount.toFixed(2)),
+      paidAmount: parseFloat(paidAmount.toFixed(2)),
+      pendingAmount: parseFloat(pendingAmount.toFixed(2)),
+      deliveredOrdersCount: relevantOrders.length,
+      paidOrdersCount: paidOrders.length,
+      pendingCollectCount: pendingOrders.length,
+      byDriver: Object.values(driverSummary),
+      closingsHistory: db.cashClosings
+    });
+  });
+
+  app.post('/api/cash-register/close', (req: Request, res: Response) => {
+    const { declaredAmount, notes, closedByUserId, closedByName, closedByRole } = req.body;
+    const tunisTime = getAfricaTunisTime();
+
+    const declared = parseFloat(declaredAmount);
+    if (isNaN(declared) || declared < 0) {
+      return res.status(400).json({ error: 'Montant réel déclaré invalide.' });
+    }
+
+    const relevantOrders = db.orders.filter(o => o.orderStatus === 'delivered' || o.paymentStatus === 'paid');
+    const theoretical = parseFloat(relevantOrders.reduce((sum, o) => sum + (o.collectedAmount || o.totalAmount), 0).toFixed(2));
+    const discrepancy = parseFloat((declared - theoretical).toFixed(2));
+
+    const closing: CashClosingRecord = {
+      id: `close_${Date.now()}`,
+      closingNumber: `CLOTURE-${tunisTime.dateStr}-${db.cashClosings.length + 1}`,
+      closingDate: new Date().toISOString(),
+      periodStart: `${tunisTime.dateStr} 00:00:00 (Africa/Tunis)`,
+      periodEnd: `${tunisTime.dateStr} 23:59:59 (Africa/Tunis)`,
+      theoreticalAmount: theoretical,
+      declaredAmount: declared,
+      discrepancy,
+      deliveredOrdersCount: relevantOrders.length,
+      paidOrdersCount: relevantOrders.filter(o => o.paymentStatus === 'paid').length,
+      pendingCollectCount: relevantOrders.filter(o => o.paymentStatus === 'to_collect').length,
+      closedBy: {
+        id: closedByUserId || 'admin',
+        name: closedByName || 'Directeur Général',
+        role: closedByRole || 'admin'
+      },
+      notes: notes ? notes.trim() : undefined,
+      status: Math.abs(discrepancy) < 0.01 ? 'validated' : 'discrepancy_reported',
+      createdAt: new Date().toISOString()
+    };
+
+    db.cashClosings.unshift(closing);
+
+    logAudit(
+      'CLOTURE_CAISSE_VALIDEE',
+      'system',
+      { id: closing.closedBy.id, name: closing.closedBy.name, role: closing.closedBy.role },
+      `Clôture de caisse n° ${closing.closingNumber}. Théorique: ${theoretical} DT, Déclaré: ${declared} DT, Écart: ${discrepancy >= 0 ? '+' : ''}${discrepancy} DT.`
+    );
+
+    broadcast('cash_closing_created', closing);
+    return res.status(201).json({ success: true, closing });
+  });
+
+  app.get('/api/cash-register/closings', (req: Request, res: Response) => {
+    return res.json({ closings: db.cashClosings });
+  });
+
+  // ==========================================
+  // SYSTEM HEALTH CHECK (§108)
+  // ==========================================
+  app.get('/api/health', (req: Request, res: Response) => {
+    const tunisTime = getAfricaTunisTime();
+    const store = isStoreOpenNow();
+
+    return res.json({
+      status: 'healthy',
+      application: 'BEBBA Healthy Food - Vos Plats santé en un clic',
+      version: '4.0.0-final',
+      timezone: 'Africa/Tunis',
+      serverTime: new Date().toISOString(),
+      tunisTime: tunisTime.formatted,
+      storeStatus: store,
+      systemMetrics: {
+        ordersCount: db.orders.length,
+        activeOrders: db.orders.filter(o => o.orderStatus !== 'delivered' && o.orderStatus !== 'cancelled').length,
+        productsCount: db.products.length,
+        categoriesCount: db.categories.length,
+        ingredientsCount: db.ingredients.length,
+        recipesCount: db.recipes.length,
+        driversCount: db.drivers.length,
+        vehiclesCount: db.vehicles.length,
+        claimsCount: db.claims.length,
+        auditLogsCount: db.auditLogs.length,
+        stockMovementsCount: db.stockMovements.length,
+        activeRealtimeSubscribers: sseSubscribers.length
+      }
+    });
   });
 
   // ==========================================
@@ -1714,6 +2570,70 @@ async function startServer() {
       },
       topProducts
     });
+  });
+
+  // ==========================================
+  // BACKUP & RESTORE DATA ROUTES (§81, §92)
+  // ==========================================
+  app.get('/api/system/backup', (req: Request, res: Response) => {
+    const backupData = {
+      version: '4.0-final',
+      exportedAt: new Date().toISOString(),
+      timezone: 'Africa/Tunis',
+      data: {
+        users: db.users,
+        products: db.products,
+        categories: db.categories,
+        ingredients: db.ingredients,
+        recipes: db.recipes,
+        suppliers: db.suppliers,
+        vehicles: db.vehicles,
+        drivers: db.drivers,
+        orders: db.orders,
+        claims: db.claims,
+        deliveryZones: db.deliveryZones,
+        cashClosings: db.cashClosings,
+        stockMovements: db.stockMovements,
+        auditLogs: db.auditLogs,
+        settings: db.settings
+      }
+    };
+    logAudit('SAUVEGARDE_EXPORTEE', 'system', { id: 'admin', name: 'Super Admin', role: 'admin' }, 'Export complet de la base de données et des configurations');
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Content-Disposition', `attachment; filename=bebba_backup_${new Date().toISOString().slice(0, 10)}.json`);
+    return res.json(backupData);
+  });
+
+  app.post('/api/system/restore', (req: Request, res: Response) => {
+    const { backup } = req.body;
+    if (!backup || !backup.data) {
+      return res.status(400).json({ error: 'Fichier de sauvegarde corrompu ou invalide.' });
+    }
+
+    try {
+      const data = backup.data;
+      if (Array.isArray(data.users)) db.users = data.users;
+      if (Array.isArray(data.products)) db.products = data.products;
+      if (Array.isArray(data.categories)) db.categories = data.categories;
+      if (Array.isArray(data.ingredients)) db.ingredients = data.ingredients;
+      if (Array.isArray(data.recipes)) db.recipes = data.recipes;
+      if (Array.isArray(data.suppliers)) db.suppliers = data.suppliers;
+      if (Array.isArray(data.vehicles)) db.vehicles = data.vehicles;
+      if (Array.isArray(data.drivers)) db.drivers = data.drivers;
+      if (Array.isArray(data.orders)) db.orders = data.orders;
+      if (Array.isArray(data.claims)) db.claims = data.claims;
+      if (Array.isArray(data.deliveryZones)) db.deliveryZones = data.deliveryZones;
+      if (Array.isArray(data.cashClosings)) db.cashClosings = data.cashClosings;
+      if (Array.isArray(data.stockMovements)) db.stockMovements = data.stockMovements;
+      if (Array.isArray(data.auditLogs)) db.auditLogs = data.auditLogs;
+      if (data.settings) db.settings = { ...db.settings, ...data.settings };
+
+      logAudit('SAUVEGARDE_RESTAUREE', 'system', { id: 'admin', name: 'Super Admin', role: 'admin' }, `Restauration réussie de la sauvegarde du ${backup.exportedAt || 'Inconnue'}`);
+      broadcast('system_restored', { restoredAt: new Date().toISOString() });
+      return res.json({ success: true, message: 'Sauvegarde restaurée avec succès.' });
+    } catch (e: any) {
+      return res.status(500).json({ error: `Échec restauration : ${e.message}` });
+    }
   });
 
   // Vite middleware in dev or static files in production

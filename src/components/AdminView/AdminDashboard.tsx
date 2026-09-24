@@ -51,7 +51,11 @@ import {
   Truck,
   Sliders,
   RotateCcw,
-  BarChart3
+  BarChart3,
+  MapPin,
+  ClipboardList,
+  Sparkles,
+  Trash2
 } from 'lucide-react';
 
 import { CatalogTab } from './CatalogTab';
@@ -62,7 +66,15 @@ import { StatisticsTab } from './StatisticsTab';
 import { LiveMapTab } from './LiveMapTab';
 import { SettingsTab } from './SettingsTab';
 import { NotificationsDrawer } from './NotificationsDrawer';
-import { CancelOrderModal, ReassignDriverModal } from './OrderActionModals';
+import { CancelOrderModal, ReassignDriverModal, PriorityOrderModal } from './OrderActionModals';
+import { StockWasteModal, PhysicalInventoryModal } from './StockActionModals';
+import { DeliveryZonesTab } from './DeliveryZonesTab';
+import { CashClosingTab } from './CashClosingTab';
+import { UsersTab } from './UsersTab';
+import { StockTab } from './StockTab';
+import { AuditTab } from './AuditTab';
+import { FleetTab } from './FleetTab';
+import { OrderDetailModal } from './OrderDetailModal';
 import { useRealtimeEvents } from '../../hooks/useRealtimeEvents';
 
 export type AdminTab =
@@ -74,6 +86,9 @@ export type AdminTab =
   | 'stock'
   | 'suppliers'
   | 'clients'
+  | 'users'
+  | 'zones'
+  | 'cash_register'
   | 'fleet'
   | 'statistics'
   | 'settings'
@@ -95,9 +110,13 @@ export const AdminDashboard: React.FC = () => {
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
   const [unreadNotifsCount, setUnreadNotifsCount] = useState(0);
 
-  // Cancellation and Reassignment modals
+  // Modals
   const [orderToCancel, setOrderToCancel] = useState<Order | null>(null);
   const [orderToReassign, setOrderToReassign] = useState<Order | null>(null);
+  const [orderToPrioritize, setOrderToPrioritize] = useState<Order | null>(null);
+  const [orderForDetail, setOrderForDetail] = useState<Order | null>(null);
+  const [isWasteModalOpen, setIsWasteModalOpen] = useState(false);
+  const [isInventoryModalOpen, setIsInventoryModalOpen] = useState(false);
 
   // Driver Assignment Modal
   const [orderToAssign, setOrderToAssign] = useState<Order | null>(null);
@@ -464,6 +483,42 @@ export const AdminDashboard: React.FC = () => {
         </button>
 
         <button
+          onClick={() => setActiveTab('users')}
+          className={`px-3.5 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition cursor-pointer flex items-center gap-1.5 ${
+            activeTab === 'users'
+              ? 'bg-purple-600 text-white shadow-md shadow-purple-600/20'
+              : 'bg-white border border-stone-200 text-stone-700 hover:bg-stone-100'
+          }`}
+        >
+          <ShieldCheck className="w-3.5 h-3.5" />
+          <span>Utilisateurs & RBAC</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('zones')}
+          className={`px-3.5 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition cursor-pointer flex items-center gap-1.5 ${
+            activeTab === 'zones'
+              ? 'bg-purple-600 text-white shadow-md shadow-purple-600/20'
+              : 'bg-white border border-stone-200 text-stone-700 hover:bg-stone-100'
+          }`}
+        >
+          <MapPin className="w-3.5 h-3.5" />
+          <span>Zones Livraison</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('cash_register')}
+          className={`px-3.5 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition cursor-pointer flex items-center gap-1.5 ${
+            activeTab === 'cash_register'
+              ? 'bg-purple-600 text-white shadow-md shadow-purple-600/20'
+              : 'bg-white border border-stone-200 text-stone-700 hover:bg-stone-100'
+          }`}
+        >
+          <DollarSign className="w-3.5 h-3.5" />
+          <span>Caisse & Clôture</span>
+        </button>
+
+        <button
           onClick={() => setActiveTab('fleet')}
           className={`px-3.5 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition cursor-pointer flex items-center gap-1.5 ${
             activeTab === 'fleet'
@@ -552,8 +607,9 @@ export const AdminDashboard: React.FC = () => {
               <thead className="bg-stone-50 text-stone-400 font-bold uppercase tracking-wider border-b border-stone-200">
                 <tr>
                   <th className="p-3">Commande</th>
+                  <th className="p-3">Priorité</th>
                   <th className="p-3">Client</th>
-                  <th className="p-3">Adresse & Ville</th>
+                  <th className="p-3">Zone & Adresse</th>
                   <th className="p-3">Total (COD)</th>
                   <th className="p-3">Statut Commande</th>
                   <th className="p-3">Livreur Affecté</th>
@@ -563,19 +619,54 @@ export const AdminDashboard: React.FC = () => {
               </thead>
               <tbody className="divide-y divide-stone-100">
                 {filteredOrders.map(order => (
-                  <tr key={order.id} className="hover:bg-stone-50/60 transition">
+                  <tr
+                    key={order.id}
+                    onClick={() => setOrderForDetail(order)}
+                    className="hover:bg-purple-50/40 transition cursor-pointer"
+                  >
                     <td className="p-3 font-mono font-bold text-stone-900">
-                      <div>{order.orderNumber}</div>
+                      <div className="hover:text-purple-600 transition underline decoration-dotted">
+                        {order.orderNumber}
+                      </div>
                       <div className="text-[10px] text-stone-400 font-normal">
                         Token : {order.trackingToken}
                       </div>
                     </td>
                     <td className="p-3">
+                      <span
+                        className={`px-2 py-0.5 rounded text-[10px] font-black uppercase ${
+                          order.priority === 'urgent'
+                            ? 'bg-rose-100 text-rose-800 border border-rose-200'
+                            : order.priority === 'vip'
+                              ? 'bg-purple-100 text-purple-800 border border-purple-200'
+                              : 'bg-stone-100 text-stone-600'
+                        }`}
+                      >
+                        {order.priority || 'normal'}
+                      </span>
+                      {order.priorityReason && (
+                        <div className="text-[10px] text-stone-400 truncate max-w-[110px]" title={order.priorityReason}>
+                          {order.priorityReason}
+                        </div>
+                      )}
+                    </td>
+                    <td className="p-3">
                       <div className="font-bold text-stone-900">{order.clientName}</div>
                       <div className="text-[10px] text-stone-500 font-mono">{order.clientPhone}</div>
                     </td>
-                    <td className="p-3 max-w-xs truncate text-stone-600">
-                      {order.deliveryAddress}, {order.deliveryCity}
+                    <td className="p-3 max-w-xs">
+                      {order.deliveryZoneName && (
+                        <div className="font-bold text-emerald-800 flex items-center gap-1 text-[11px]">
+                          <MapPin className="w-3 h-3 text-emerald-600 shrink-0" />
+                          <span className="truncate">{order.deliveryZoneName}</span>
+                        </div>
+                      )}
+                      <div className="truncate text-stone-600">{order.deliveryAddress}, {order.deliveryCity}</div>
+                      {order.estimatedDeliveryTime && (
+                        <div className="text-[10px] text-stone-400">
+                          ETA : {new Date(order.estimatedDeliveryTime).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', timeZone: 'Africa/Tunis' })}
+                        </div>
+                      )}
                     </td>
                     <td className="p-3 font-mono font-bold text-stone-900">
                       {order.totalAmount.toFixed(2)} DT
@@ -616,19 +707,36 @@ export const AdminDashboard: React.FC = () => {
                         {order.paymentStatus === 'paid' ? 'PAID' : 'TO_COLLECT'}
                       </span>
                     </td>
-                    <td className="p-3 text-right">
+                    <td className="p-3 text-right" onClick={e => e.stopPropagation()}>
                       <div className="flex items-center justify-end gap-1.5">
                         {order.orderStatus !== 'delivered' && order.orderStatus !== 'cancelled' ? (
                           <>
                             <button
-                              onClick={() => setOrderToReassign(order)}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setOrderToPrioritize(order);
+                              }}
+                              className="bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 text-[11px] font-bold px-2 py-1.5 rounded-lg transition"
+                              title="Changer priorité (§6)"
+                            >
+                              Priorité
+                            </button>
+
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setOrderToReassign(order);
+                              }}
                               className="bg-stone-900 hover:bg-black text-white text-[11px] font-bold px-2.5 py-1.5 rounded-lg transition"
                             >
                               {order.assignedDriverId ? 'Réaffecter' : 'Affecter'}
                             </button>
 
                             <button
-                              onClick={() => setOrderToCancel(order)}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setOrderToCancel(order);
+                              }}
                               className="bg-rose-50 hover:bg-rose-100 text-rose-700 text-[11px] font-bold px-2 py-1.5 rounded-lg transition"
                               title="Annuler avec restitution stock"
                             >
@@ -637,7 +745,8 @@ export const AdminDashboard: React.FC = () => {
                           </>
                         ) : order.paymentStatus === 'to_collect' && order.orderStatus !== 'cancelled' ? (
                           <button
-                            onClick={async () => {
+                            onClick={async (e) => {
+                              e.stopPropagation();
                               await collectPayment(order.id, order.totalAmount, {
                                 name: currentUser.name,
                                 id: currentUser.id,
@@ -849,182 +958,16 @@ export const AdminDashboard: React.FC = () => {
       )}
 
       {/* TAB 3: STOCKS & INGREDIENTS */}
-      {activeTab === 'stock' && (
-        <div className="bg-white rounded-3xl p-6 border border-stone-200 shadow-xs">
-          <div className="flex items-center justify-between mb-6">
-            <div>
-              <h2 className="text-base font-bold text-stone-900">
-                État des Stocks d Ingrédients Frais
-              </h2>
-              <p className="text-xs text-stone-500">
-                Déstockage automatique lors du démarrage des préparations en cuisine.
-              </p>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {ingredients.map(ing => (
-              <div
-                key={ing.id}
-                className="p-4 rounded-2xl border border-stone-200 hover:border-stone-300 transition flex flex-col justify-between"
-              >
-                <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="font-bold text-xs text-stone-900">{ing.name}</span>
-                    <span
-                      className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                        ing.status === 'optimal'
-                          ? 'bg-emerald-100 text-emerald-800'
-                          : ing.status === 'low'
-                          ? 'bg-amber-100 text-amber-800'
-                          : 'bg-rose-100 text-rose-800'
-                      }`}
-                    >
-                      {ing.status === 'optimal' ? 'Optimal' : ing.status === 'low' ? 'Stock bas' : 'Rupture'}
-                    </span>
-                  </div>
-
-                  <div className="flex items-baseline gap-2 mb-2">
-                    <span className="text-2xl font-black text-stone-900 font-mono">
-                      {ing.currentStock}
-                    </span>
-                    <span className="text-xs text-stone-500">{ing.unit} en réserve</span>
-                  </div>
-
-                  <div className="text-[11px] text-stone-400">
-                    Seuil minimum : {ing.minThreshold} {ing.unit} • Fournisseur : {ing.supplierName || 'Local'}
-                  </div>
-                </div>
-
-                <div className="pt-3 mt-3 border-t border-stone-100 flex items-center justify-between">
-                  <span className="font-mono text-xs font-semibold text-stone-600">
-                    {ing.unitCost.toFixed(2)} DT/{ing.unit}
-                  </span>
-                  <button
-                    onClick={() => {
-                      setRestockIngredient(ing);
-                      setRestockQuantity(10);
-                    }}
-                    className="bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300 px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer"
-                  >
-                    + Réapprovisionner
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
+      {activeTab === 'stock' && <StockTab />}
 
       {/* TAB 4: FLEET & DRIVERS */}
-      {activeTab === 'fleet' && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <div className="bg-white rounded-3xl p-6 border border-stone-200 shadow-xs">
-            <h3 className="text-base font-bold text-stone-900 mb-4 flex items-center gap-2">
-              <Bike className="w-5 h-5 text-blue-600" />
-              Livreurs Actifs
-            </h3>
-            <div className="space-y-4">
-              {drivers.map(drv => (
-                <div key={drv.id} className="p-4 rounded-2xl border border-stone-200 flex items-center justify-between">
-                  <div>
-                    <div className="font-bold text-sm text-stone-900">{drv.name}</div>
-                    <div className="text-xs text-stone-500 font-mono">{drv.phone}</div>
-                    <div className="text-[11px] text-stone-400 mt-1">
-                      Véhicule : {drv.vehicleModel} ({drv.vehiclePlate})
-                    </div>
-                  </div>
-                  <div className="text-right">
-                    <span
-                      className={`text-xs font-bold px-2.5 py-1 rounded-full ${
-                        drv.status === 'busy'
-                          ? 'bg-blue-100 text-blue-800'
-                          : 'bg-emerald-100 text-emerald-800'
-                      }`}
-                    >
-                      {drv.status === 'busy' ? 'En livraison' : 'Disponible'}
-                    </span>
-                    <div className="text-[11px] text-stone-500 mt-1">
-                      {drv.completedDeliveriesToday} livraisons aujourd hui
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <div className="bg-white rounded-3xl p-6 border border-stone-200 shadow-xs">
-            <h3 className="text-base font-bold text-stone-900 mb-4 flex items-center gap-2">
-              <Layers className="w-5 h-5 text-purple-600" />
-              Véhicules de la Flotte
-            </h3>
-            <div className="space-y-4">
-              {vehicles.map(veh => (
-                <div key={veh.id} className="p-4 rounded-2xl border border-stone-200 flex items-center justify-between">
-                  <div>
-                    <div className="font-bold text-xs text-stone-900">{veh.model}</div>
-                    <div className="text-xs text-stone-500 font-mono">Immatriculation : {veh.licensePlate}</div>
-                    <div className="text-[11px] text-stone-400">Type : {veh.type}</div>
-                  </div>
-                  <div className="text-right">
-                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800">
-                      {veh.status}
-                    </span>
-                    {veh.assignedDriverName && (
-                      <div className="text-[11px] text-stone-600 mt-1">
-                        Conducteur : {veh.assignedDriverName}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
+      {activeTab === 'fleet' && <FleetTab />}
 
       {/* TAB 5: AUDIT LOGS */}
-      {activeTab === 'audit' && (
-        <div className="bg-white rounded-3xl p-6 border border-stone-200 shadow-xs">
-          <h2 className="text-base font-bold text-stone-900 mb-4 flex items-center gap-2">
-            <History className="w-5 h-5 text-stone-700" />
-            Journal d Audit & Traçabilité Complète
-          </h2>
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
-              <thead className="bg-stone-50 text-stone-400 font-bold uppercase tracking-wider border-b border-stone-200">
-                <tr>
-                  <th className="p-3">Horodatage</th>
-                  <th className="p-3">Action</th>
-                  <th className="p-3">Utilisateur</th>
-                  <th className="p-3">Catégorie</th>
-                  <th className="p-3">Détails de l opération</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-stone-100">
-                {auditLogs.map(log => (
-                  <tr key={log.id} className="hover:bg-stone-50 transition">
-                    <td className="p-3 font-mono text-stone-500 whitespace-nowrap">
-                      {new Date(log.timestamp).toLocaleString()}
-                    </td>
-                    <td className="p-3 font-bold text-stone-900">{log.action}</td>
-                    <td className="p-3">
-                      <span className="font-semibold text-stone-800">{log.userName}</span>{' '}
-                      <span className="text-stone-400">({log.userRole})</span>
-                    </td>
-                    <td className="p-3">
-                      <span className="bg-stone-100 px-2 py-0.5 rounded text-[10px] font-mono text-stone-700">
-                        {log.category}
-                      </span>
-                    </td>
-                    <td className="p-3 text-stone-600">{log.details}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
+      {activeTab === 'audit' && <AuditTab />}
+
+      {/* TAB: USERS & RBAC */}
+      {activeTab === 'users' && <UsersTab />}
 
       {/* TAB: LIVE FLEET MAP */}
       {activeTab === 'live_map' && <LiveMapTab />}
@@ -1040,6 +983,12 @@ export const AdminDashboard: React.FC = () => {
 
       {/* TAB: CLIENTS */}
       {activeTab === 'clients' && <ClientsTab />}
+
+      {/* TAB: DELIVERY ZONES */}
+      {activeTab === 'zones' && <DeliveryZonesTab />}
+
+      {/* TAB: CASH REGISTER & CLOSINGS */}
+      {activeTab === 'cash_register' && <CashClosingTab />}
 
       {/* TAB: STATISTICS */}
       {activeTab === 'statistics' && <StatisticsTab />}
@@ -1169,6 +1118,55 @@ export const AdminDashboard: React.FC = () => {
         drivers={drivers}
         onClose={() => setOrderToReassign(null)}
         onSuccess={loadAllAdminData}
+      />
+
+      {/* Modal: Order Priority (§6) */}
+      {orderToPrioritize && (
+        <PriorityOrderModal
+          order={orderToPrioritize}
+          onClose={() => setOrderToPrioritize(null)}
+          onSuccess={loadAllAdminData}
+        />
+      )}
+
+      {/* Modal: Stock Waste & Loss (§33) */}
+      {isWasteModalOpen && (
+        <StockWasteModal
+          ingredients={ingredients}
+          onClose={() => setIsWasteModalOpen(false)}
+          onSuccess={loadAllAdminData}
+        />
+      )}
+
+      {/* Modal: Physical Inventory Reconciliation (§34) */}
+      {isInventoryModalOpen && (
+        <PhysicalInventoryModal
+          ingredients={ingredients}
+          onClose={() => setIsInventoryModalOpen(false)}
+          onSuccess={loadAllAdminData}
+        />
+      )}
+
+      {/* Modal: Order Detailed View & Lifecycle (§6) */}
+      <OrderDetailModal
+        order={orderForDetail}
+        onClose={() => setOrderForDetail(null)}
+        onAssignDriver={(ord) => {
+          setOrderForDetail(null);
+          setOrderToAssign(ord);
+        }}
+        onReassignDriver={(ord) => {
+          setOrderForDetail(null);
+          setOrderToReassign(ord);
+        }}
+        onCancelOrder={(ord) => {
+          setOrderForDetail(null);
+          setOrderToCancel(ord);
+        }}
+        onPrioritize={(ord) => {
+          setOrderForDetail(null);
+          setOrderToPrioritize(ord);
+        }}
       />
 
       {/* Drawer: System Notifications (§69) */}

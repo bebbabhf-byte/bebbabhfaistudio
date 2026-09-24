@@ -1,7 +1,8 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useCart } from '../context/CartContext';
 import { UserRole } from '../types';
+import { fetchStoreStatus } from '../services/api';
 import {
   ShoppingBag,
   ChefHat,
@@ -12,7 +13,8 @@ import {
   MessageSquareWarning,
   Flame,
   Layers,
-  ChevronDown
+  ChevronDown,
+  Clock
 } from 'lucide-react';
 
 interface NavbarProps {
@@ -24,6 +26,26 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab }) => 
   const { currentUser, currentRole, switchDemoRole } = useAuth();
   const { itemCount, setIsCartOpen } = useCart();
   const [isRoleDropdownOpen, setIsRoleDropdownOpen] = React.useState(false);
+  const [storeStatus, setStoreStatus] = useState<{
+    isOpen: boolean;
+    openingTime: string;
+    closingTime: string;
+    tunisTime: string;
+  } | null>(null);
+
+  useEffect(() => {
+    fetchStoreStatus()
+      .then(st => setStoreStatus(st))
+      .catch(console.error);
+
+    const interval = setInterval(() => {
+      fetchStoreStatus()
+        .then(st => setStoreStatus(st))
+        .catch(console.error);
+    }, 60000);
+
+    return () => clearInterval(interval);
+  }, []);
 
   const rolesConfig: { role: UserRole; label: string; desc: string; icon: any; color: string }[] = [
     { role: 'client', label: 'Client (Sarra)', desc: 'Commander, suivi GPS & réclamations', icon: UserIcon, color: 'bg-emerald-600' },
@@ -36,13 +58,27 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab }) => 
 
   return (
     <header className="sticky top-0 z-40 bg-white/95 backdrop-blur-md border-b border-stone-200 shadow-xs">
-      {/* Top Banner with official slogan and demo role switcher */}
+      {/* Top Banner with official slogan, store status and demo role switcher */}
       <div className="bg-stone-900 text-stone-100 text-xs px-4 py-1.5 flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
-          <span className="inline-block w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+          <span className={`inline-block w-2 h-2 rounded-full ${storeStatus?.isOpen ? 'bg-emerald-400 animate-pulse' : 'bg-rose-400'}`}></span>
           <span className="font-medium text-emerald-300">BEBBA Healthy Food</span>
           <span className="text-stone-400 hidden sm:inline">—</span>
-          <span className="text-stone-300 italic hidden sm:inline">« Vos Plats santé en un clic »</span>
+          <span className="text-stone-300 italic hidden md:inline">« Vos Plats santé en un clic »</span>
+          {storeStatus && (
+            <span
+              className={`hidden sm:inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium ${
+                storeStatus.isOpen
+                  ? 'bg-emerald-950 text-emerald-300 border border-emerald-800'
+                  : 'bg-rose-950 text-rose-300 border border-rose-800'
+              }`}
+            >
+              <Clock className="w-3 h-3" />
+              {storeStatus.isOpen
+                ? `Ouvert jusqu'à ${storeStatus.closingTime} (Tunis)`
+                : `Fermé (Ouvre à ${storeStatus.openingTime})`}
+            </span>
+          )}
           <span className="bg-stone-800 text-stone-300 px-2 py-0.5 rounded text-[11px] font-mono border border-stone-700">Tunisie • TND (DT)</span>
         </div>
 

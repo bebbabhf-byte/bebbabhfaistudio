@@ -83,6 +83,7 @@ export interface OrderItem {
   selectedOptions: OrderItemOption[];
   itemTotal: number;
   specialInstructions?: string;
+  recipeVersion?: string;
 }
 
 export type OrderStatus =
@@ -151,6 +152,13 @@ export interface Order {
   cancelReason?: string;
   cancelledBy?: string;
   cancelledAt?: string;
+  deliveryZoneId?: string;
+  deliveryZoneName?: string;
+  estimatedDeliveryTime?: string;
+  prepStartedAt?: string;
+  prepCompletedAt?: string;
+  priority?: 'normal' | 'urgent' | 'vip';
+  priorityReason?: string;
   reassignmentHistory?: Array<{
     oldDriverId: string;
     oldDriverName: string;
@@ -294,7 +302,7 @@ export interface DriverProfile {
   vehicleId?: string;
   vehicleModel?: string;
   vehiclePlate?: string;
-  status: 'available' | 'busy' | 'offline' | 'suspended';
+  status: 'available' | 'busy' | 'offline' | 'suspended' | 'inactive';
   activeOrderId?: string;
   currentLocation?: GPSCoordinate;
   completedDeliveriesToday: number;
@@ -357,4 +365,55 @@ export interface AppSettings {
   closingTime?: string;
   acceptingOrders?: boolean;
   autoAssignDrivers?: boolean;
+  timezone?: string;
+}
+
+export interface DeliveryZone {
+  id: string;
+  name: string;
+  active: boolean;
+  deliveryFee: number;
+  minOrderAmount: number;
+  estimatedMinutes: number;
+  description?: string;
+}
+
+export interface CashClosingRecord {
+  id: string;
+  closingNumber: string;
+  closingDate: string;
+  periodStart: string;
+  periodEnd: string;
+  theoreticalAmount: number;
+  declaredAmount: number;
+  discrepancy: number;
+  deliveredOrdersCount: number;
+  paidOrdersCount: number;
+  pendingCollectCount: number;
+  closedBy: {
+    id: string;
+    name: string;
+    role: string;
+  };
+  notes?: string;
+  status: 'validated' | 'discrepancy_reported';
+  createdAt: string;
+}
+
+export interface PhysicalInventoryCheck {
+  id: string;
+  date: string;
+  conductedBy: string;
+  items: {
+    ingredientId: string;
+    ingredientName: string;
+    unit: string;
+    theoreticalStock: number;
+    countedStock: number;
+    difference: number;
+    unitCost: number;
+    costImpact: number;
+  }[];
+  totalCostImpact: number;
+  status: 'submitted' | 'adjusted';
 }
