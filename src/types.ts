@@ -142,6 +142,15 @@ export interface Order {
   assignedDriverPhone?: string;
   assignedVehicle?: string;
   trackingToken: string; // 8 characters e.g. "AB7K92QX"
+  stockConsumed?: boolean; // Règle #10 : Idempotence consommation stock
+  discountAmount?: number; // Règle #11 : Montant total des promotions appliquées
+  promotionsApplied?: Array<{
+    id: string;
+    name: string;
+    code?: string;
+    discount: number;
+    appliedAt: string;
+  }>;
   currentLocation?: GPSCoordinate;
   locationHistory?: GPSCoordinate[];
   createdAt: string;
@@ -169,6 +178,17 @@ export interface Order {
   }>;
 }
 
+export interface Promotion {
+  id: string;
+  name: string;
+  code?: string;
+  type: 'percentage' | 'fixed';
+  value: number; // e.g. 10 for 10% or 5 for 5 DT
+  minOrderAmount?: number;
+  isActive: boolean;
+  createdAt: string; // ISO date, used to sort: newest first (Règle #11)
+}
+
 export type ClaimType =
   | 'Produit incorrect'
   | 'Produit manquant'
@@ -180,12 +200,12 @@ export type ClaimType =
   | 'Problème de paiement'
   | 'Autre';
 
+// Statuts officiels de réclamation (§36, §139, §247) : Casse obligatoire en MAJUSCULES
 export type ClaimStatus =
-  | 'open'
-  | 'in_review'
-  | 'waiting_for_customer'
-  | 'resolved'
-  | 'closed';
+  | 'OPEN'
+  | 'IN_REVIEW'
+  | 'RESOLVED'
+  | 'CLOSED';
 
 export type ClaimResolution =
   | 'Aucune action'
@@ -238,6 +258,7 @@ export interface Ingredient {
   supplierId?: string;
   supplierName?: string;
   status: 'optimal' | 'low' | 'out_of_stock';
+  category?: string;
 }
 
 export interface RecipeIngredient {
@@ -417,3 +438,23 @@ export interface PhysicalInventoryCheck {
   totalCostImpact: number;
   status: 'submitted' | 'adjusted';
 }
+
+export interface AIMenuRecipe {
+  id: string;
+  name: string;
+  tagline: string;
+  category: 'Bowl' | 'Salade' | 'Plat chaud' | 'Wrap & Sandwich' | 'Soupe & Velouté' | 'Snack Healthy';
+  prepTimeMinutes: number;
+  calories: number;
+  proteinGrams: number;
+  image?: string;
+  healthBenefits: string[];
+  ingredientsUsed: {
+    ingredientName: string;
+    quantityEstimated: string;
+    inStock: boolean;
+  }[];
+  chefInstructions: string[];
+  dietaryTags: string[];
+}
+

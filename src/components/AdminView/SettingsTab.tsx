@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { AppSettings } from '../../types';
-import { fetchSettings, updateSettings, downloadBackup, restoreBackup } from '../../services/api';
+import { AppSettings, Promotion } from '../../types';
+import { fetchSettings, updateSettings, downloadBackup, restoreBackup, fetchPromotions } from '../../services/api';
 import {
   Settings,
   DollarSign,
@@ -16,11 +16,13 @@ import {
   Database,
   Download,
   Upload,
-  AlertCircle
+  AlertCircle,
+  Tag
 } from 'lucide-react';
 
 export const SettingsTab: React.FC = () => {
   const [settings, setSettings] = useState<AppSettings | null>(null);
+  const [promotions, setPromotions] = useState<Promotion[]>([]);
   const [loading, setLoading] = useState(true);
   const [savedMessage, setSavedMessage] = useState(false);
 
@@ -31,8 +33,12 @@ export const SettingsTab: React.FC = () => {
   const loadSettings = async () => {
     try {
       setLoading(true);
-      const data = await fetchSettings();
-      setSettings(data);
+      const [settingsData, promosData] = await Promise.all([
+        fetchSettings(),
+        fetchPromotions()
+      ]);
+      setSettings(settingsData);
+      setPromotions(promosData);
     } catch (e) {
       console.error(e);
     } finally {
@@ -236,6 +242,58 @@ export const SettingsTab: React.FC = () => {
                 className="w-full px-3 py-2 border rounded-xl bg-stone-100 text-stone-500 font-mono"
               />
             </div>
+          </div>
+        </div>
+
+        {/* Campagnes Promotionnelles & Moteur de Remises (§42, §177, §225, §242) */}
+        <div className="bg-white p-5 rounded-2xl border border-stone-200 shadow-xs space-y-4 md:col-span-2">
+          <div className="flex items-center justify-between">
+            <h4 className="font-bold text-stone-900 text-xs uppercase tracking-wider flex items-center gap-2 text-purple-700">
+              <Tag className="w-4 h-4" />
+              <span>Codes Promo & Moteur Déterministe de Remises (§42, §177, §225)</span>
+            </h4>
+            <span className="text-[10px] bg-purple-50 text-purple-700 font-bold px-2 py-0.5 rounded-full border border-purple-200">
+              Ordre d'application : Plus récent en premier (Règle #11)
+            </span>
+          </div>
+
+          <p className="text-xs text-stone-500">
+            Les promotions actives ci-dessous sont évaluées et cumulées sur le sous-total du panier lors du passage de commande.
+          </p>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 pt-1">
+            {promotions.map(promo => (
+              <div
+                key={promo.id}
+                className={`p-3.5 rounded-xl border transition ${
+                  promo.isActive ? 'bg-purple-50/50 border-purple-200' : 'bg-stone-50 border-stone-200 opacity-60'
+                }`}
+              >
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="font-mono font-black text-sm text-purple-900 bg-purple-100 px-2 py-0.5 rounded-lg">
+                    {promo.code}
+                  </span>
+                  <span
+                    className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                      promo.isActive ? 'bg-emerald-100 text-emerald-800' : 'bg-stone-200 text-stone-600'
+                    }`}
+                  >
+                    {promo.isActive ? 'Actif' : 'Désactivé'}
+                  </span>
+                </div>
+                <div className="text-xs font-semibold text-stone-800">{promo.name}</div>
+                <div className="text-[11px] text-stone-500 mt-1">
+                  Réduction :{' '}
+                  <strong className="text-purple-700">
+                    {promo.type === 'percentage' ? `${promo.value}%` : `${promo.value} DT`}
+                  </strong>
+                  {promo.minOrderAmount && promo.minOrderAmount > 0 && ` • Min: ${promo.minOrderAmount} DT`}
+                </div>
+                <div className="text-[10px] text-stone-400 mt-2">
+                  Créé le : {new Date(promo.createdAt).toLocaleDateString()}
+                </div>
+              </div>
+            ))}
           </div>
         </div>
 

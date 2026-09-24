@@ -19,7 +19,9 @@ import {
   ClientProfile,
   DeliveryZone,
   CashClosingRecord,
-  UserRole
+  UserRole,
+  Promotion,
+  AIMenuRecipe
 } from '../types';
 import {
   INITIAL_CATEGORIES,
@@ -1226,3 +1228,52 @@ export async function restoreBackup(backupData: any): Promise<{ success: boolean
   }
   return res.json();
 }
+
+// Promotions Engine (§42, §177, §225, §242)
+export async function fetchPromotions(): Promise<Promotion[]> {
+  try {
+    const res = await apiFetch(`${API_BASE}/promotions`);
+    if (!res.ok) return [];
+    const data = await res.json();
+    return data.promotions || [];
+  } catch (e) {
+    return [];
+  }
+}
+
+export async function calculatePromotions(subtotal: number, promoCodes?: string[]) {
+  const res = await apiFetch(`${API_BASE}/promotions/calculate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ subtotal, promoCodes })
+  });
+  if (!res.ok) throw new Error('Erreur calcul promotions');
+  return res.json();
+}
+
+// IA Recettes Cuisine (Gemini 3.8 Flash)
+export async function generateAIRecipes(
+  mode: 'all_stock' | 'selected_ingredients',
+  selectedIngredientIds?: string[]
+): Promise<{
+  success: boolean;
+  count: number;
+  isAIPowered: boolean;
+  modelUsed?: string;
+  mode: string;
+  ingredientsAnalyzedCount: number;
+  recipes: AIMenuRecipe[];
+}> {
+  const res = await apiFetch(`${API_BASE}/ai/recipes/generate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mode, selectedIngredientIds })
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Erreur génération recettes IA' }));
+    throw new Error(err.error || 'Erreur génération recettes IA');
+  }
+  return res.json();
+}
+
+

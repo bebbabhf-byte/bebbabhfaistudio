@@ -176,16 +176,17 @@ export const CustomerClaimsView: React.FC<CustomerClaimsViewProps> = ({ initialO
   };
 
   const getStatusBadge = (status: string) => {
-    switch (status) {
-      case 'open':
+    const s = (status || '').toUpperCase();
+    switch (s) {
+      case 'OPEN':
         return <span className="bg-amber-100 text-amber-800 text-[11px] font-bold px-2 py-0.5 rounded-full">Ouverte</span>;
-      case 'in_review':
+      case 'IN_REVIEW':
         return <span className="bg-blue-100 text-blue-800 text-[11px] font-bold px-2 py-0.5 rounded-full">En traitement</span>;
-      case 'waiting_for_customer':
+      case 'WAITING_FOR_CUSTOMER':
         return <span className="bg-purple-100 text-purple-800 text-[11px] font-bold px-2 py-0.5 rounded-full">Attente réponse client</span>;
-      case 'resolved':
+      case 'RESOLVED':
         return <span className="bg-emerald-100 text-emerald-800 text-[11px] font-bold px-2 py-0.5 rounded-full">Résolue</span>;
-      case 'closed':
+      case 'CLOSED':
         return <span className="bg-stone-100 text-stone-700 text-[11px] font-bold px-2 py-0.5 rounded-full">Fermée</span>;
       default:
         return <span className="bg-stone-100 text-stone-700 text-[11px] font-bold px-2 py-0.5 rounded-full">{status}</span>;
@@ -442,19 +443,38 @@ export const CustomerClaimsView: React.FC<CustomerClaimsViewProps> = ({ initialO
             <form onSubmit={handleCreateClaim} className="p-6 space-y-4 text-xs">
               {/* Select order */}
               <div>
-                <label className="block font-bold text-stone-800 mb-1">Commande concernée *</label>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block font-bold text-stone-800">Commande concernée *</label>
+                  <span className="text-[10px] text-amber-700 font-semibold bg-amber-50 px-2 py-0.5 rounded-full border border-amber-200">
+                    Max 3h après livraison (Règle #15 & #16)
+                  </span>
+                </div>
                 <select
                   required
                   value={selectedOrderId}
                   onChange={e => setSelectedOrderId(e.target.value)}
                   className="w-full p-2.5 border border-stone-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none"
                 >
-                  <option value="">Sélectionnez votre commande</option>
-                  {orders.map(o => (
-                    <option key={o.id} value={o.id}>
-                      {o.orderNumber} — {o.totalAmount} DT ({new Date(o.createdAt).toLocaleDateString()})
-                    </option>
-                  ))}
+                  <option value="">Sélectionnez votre commande livrée</option>
+                  {orders.map(o => {
+                    const alreadyClaimed = claims.some(c => c.orderId === o.id || c.orderNumber === o.orderNumber);
+                    const isDelivered = o.orderStatus === 'delivered';
+                    const delivTime = new Date(o.deliveredAt || o.updatedAt).getTime();
+                    const isWithin3Hours = Date.now() - delivTime <= 3 * 3600 * 1000;
+                    const isEligible = isDelivered && isWithin3Hours && !alreadyClaimed;
+
+                    let tag = '';
+                    if (!isDelivered) tag = ' (En cours - Non éligible)';
+                    else if (alreadyClaimed) tag = ' (Réclamation déjà déposée)';
+                    else if (!isWithin3Hours) tag = ' (Délai de 3h dépassé)';
+                    else tag = ' (Éligible ✓)';
+
+                    return (
+                      <option key={o.id} value={o.id} disabled={!isEligible}>
+                        {o.orderNumber} — {o.totalAmount} DT{tag}
+                      </option>
+                    );
+                  })}
                 </select>
               </div>
 

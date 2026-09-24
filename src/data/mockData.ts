@@ -606,7 +606,7 @@ export const INITIAL_ORDERS: Order[] = [
     assignedDriverName: 'Ahmed Ben Salah',
     assignedDriverPhone: '0021698111222',
     assignedVehicle: 'Yamaha NMAX 125 (245-TUN-8812)',
-    trackingToken: 'AB7K92QX',
+    trackingToken: 'tk_bebba_1047_demo',
     currentLocation: {
       latitude: 36.8375,
       longitude: 10.1832,
@@ -793,7 +793,7 @@ export const INITIAL_CLAIMS: Claim[] = [
     photos: [
       'https://images.unsplash.com/photo-1540420773420-3366772f4999?auto=format&fit=crop&w=600&q=80'
     ],
-    status: 'in_review',
+    status: 'IN_REVIEW',
     resolution: 'Avoir',
     resolutionNotes: 'Avoir de 8 DT accordé pour la salade manquante lors de la prochaine commande.',
     messages: [

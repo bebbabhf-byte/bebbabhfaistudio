@@ -201,7 +201,7 @@ export const AdminDashboard: React.FC = () => {
 
   const activeDeliveriesCount = orders.filter(o => o.orderStatus === 'delivering').length;
   const inKitchenCount = orders.filter(o => o.orderStatus === 'received' || o.orderStatus === 'preparing').length;
-  const openClaimsCount = claims.filter(c => c.status === 'open' || c.status === 'in_review').length;
+  const openClaimsCount = claims.filter(c => c.status === 'OPEN' || c.status === 'IN_REVIEW').length;
 
   const handleAssignDriver = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -797,10 +797,12 @@ export const AdminDashboard: React.FC = () => {
                     <span className="font-mono font-bold text-xs text-stone-900">{claim.claimNumber}</span>
                     <span
                       className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                        claim.status === 'resolved'
+                        claim.status.toUpperCase() === 'RESOLVED'
                           ? 'bg-emerald-100 text-emerald-800'
-                          : claim.status === 'open'
+                          : claim.status.toUpperCase() === 'OPEN'
                           ? 'bg-rose-100 text-rose-800'
+                          : claim.status.toUpperCase() === 'CLOSED'
+                          ? 'bg-stone-100 text-stone-800'
                           : 'bg-blue-100 text-blue-800'
                       }`}
                     >
@@ -853,10 +855,16 @@ export const AdminDashboard: React.FC = () => {
                     </select>
 
                     <button
-                      onClick={() => handleResolveClaim('resolved')}
+                      onClick={() => handleResolveClaim('RESOLVED')}
                       className="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-2 rounded-xl text-xs font-bold shadow-sm transition"
                     >
                       Résoudre
+                    </button>
+                    <button
+                      onClick={() => handleResolveClaim('CLOSED')}
+                      className="bg-stone-700 hover:bg-stone-800 text-white px-3 py-2 rounded-xl text-xs font-bold shadow-sm transition"
+                    >
+                      Clôturer
                     </button>
                   </div>
                 </div>

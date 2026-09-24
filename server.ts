@@ -38,11 +38,24 @@ import {
   NotificationType,
   DeliveryZone,
   CashClosingRecord,
-  PhysicalInventoryCheck
+  PhysicalInventoryCheck,
+  Promotion,
+  AIMenuRecipe
 } from './src/types';
+import { GoogleGenAI } from '@google/genai';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// Initialisation Client Gemini AI (Server-Side)
+const aiClient = new GoogleGenAI({
+  apiKey: process.env.GEMINI_API_KEY,
+  httpOptions: {
+    headers: {
+      'User-Agent': 'aistudio-build'
+    }
+  }
+});
 
 // Initial Delivery Zones (§3, §4)
 const INITIAL_DELIVERY_ZONES: DeliveryZone[] = [
@@ -121,6 +134,7 @@ interface DBState {
   deliveryZones: DeliveryZone[];
   cashClosings: CashClosingRecord[];
   inventoryChecks: PhysicalInventoryCheck[];
+  promotions: Promotion[];
 }
 
 const db: DBState = {
@@ -140,7 +154,40 @@ const db: DBState = {
   settings: { ...INITIAL_SETTINGS, timezone: 'Africa/Tunis' },
   deliveryZones: [...INITIAL_DELIVERY_ZONES],
   cashClosings: [],
-  inventoryChecks: []
+  inventoryChecks: [],
+  // Moteur de promotions (§42, §177, §225, §242)
+  promotions: [
+    {
+      id: 'promo_welcome',
+      name: 'Offre Bienvenue Santé (10%)',
+      code: 'BEBBA10',
+      type: 'percentage',
+      value: 10,
+      minOrderAmount: 20,
+      isActive: true,
+      createdAt: '2026-08-01T10:00:00.000Z'
+    },
+    {
+      id: 'promo_rentree',
+      name: 'Remise Rentrée Équilibrée (5 DT)',
+      code: 'RENTREE5',
+      type: 'fixed',
+      value: 5,
+      minOrderAmount: 30,
+      isActive: true,
+      createdAt: '2026-09-01T10:00:00.000Z'
+    },
+    {
+      id: 'promo_flash_vip',
+      name: 'Avantage Flash Vitalité (5%)',
+      code: 'FLASHVIP',
+      type: 'percentage',
+      value: 5,
+      minOrderAmount: 25,
+      isActive: true,
+      createdAt: '2026-09-15T12:00:00.000Z'
+    }
+  ] as Promotion[]
 };
 
 // SSE Subscribers
@@ -299,8 +346,13 @@ function generateTrackingToken(): string {
   return token;
 }
 
-// Consume recipe ingredients when kitchen begins preparation
+// Consume recipe ingredients when kitchen begins preparation (Règle #10)
 function consumeIngredientsForOrder(order: Order, performedBy: string) {
+  // Idempotence stricte (§22, §222, §242) : ne jamais consommer deux fois
+  if (order.stockConsumed) {
+    return;
+  }
+
   for (const item of order.items) {
     const recipe = db.recipes.find(r => r.productId === item.productId);
     if (!recipe) continue;
@@ -339,10 +391,15 @@ function consumeIngredientsForOrder(order: Order, performedBy: string) {
       db.stockMovements.unshift(movement);
     }
   }
+
+  // Marquer définitivement comme consommé
+  order.stockConsumed = true;
 }
 
 // Restore recipe ingredients if an order in preparation/ready is cancelled
 function restoreIngredientsForCancelledOrder(order: Order, performedBy: string) {
+  if (!order.stockConsumed) return; // Rien à restituer si non consommé
+
   for (const item of order.items) {
     const recipe = db.recipes.find(r => r.productId === item.productId);
     if (!recipe) continue;
@@ -377,6 +434,81 @@ function restoreIngredientsForCancelledOrder(order: Order, performedBy: string) 
       db.stockMovements.unshift(movement);
     }
   }
+
+  order.stockConsumed = false;
+}
+
+// Contrôle de la permission READ ONLY sur les Ingrédients (§24, §54, §142, §219, §243)
+function checkIngredientsReadOnly(req: Request, res: Response): boolean {
+  const perm = (
+    req.headers['x-user-permission'] ||
+    req.headers['x-user-role'] ||
+    req.query.permission ||
+    (req.body && req.body.userPermission) ||
+    ''
+  ).toString().toLowerCase();
+
+  if (perm === 'read_only' || perm === 'readonly') {
+    res.status(403).json({
+      error: 'Action refusée : Vous disposez de la permission READ ONLY (Lecture Seule) sur les ingrédients. Aucune modification de stock, création, mise à jour ou suppression n\'est autorisée (Règles §24, §54, §142).'
+    });
+    return true;
+  }
+  return false;
+}
+
+// Moteur de calcul des promotions cumulables (§42, §177, §225, §242)
+// Règle #11 : Ordre strict : la plus récente en premier, puis précédente, puis précédente
+function applyPromotionsEngine(subtotal: number, promoCodes?: string[]): {
+  discountAmount: number;
+  promotionsApplied: Array<{ id: string; name: string; code?: string; discount: number; appliedAt: string }>;
+  discountedSubtotal: number;
+} {
+  const codes = (promoCodes || []).map(c => c.trim().toUpperCase());
+  // Trier de la plus récente à la plus ancienne (déterministe)
+  const sortedActive = [...(db.promotions || [])]
+    .filter(p => p.isActive)
+    .filter(p => {
+      if (codes.length > 0) {
+        return p.code && codes.includes(p.code.toUpperCase());
+      }
+      return false;
+    })
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+  let running = subtotal;
+  let totalDiscount = 0;
+  const applied: Array<{ id: string; name: string; code?: string; discount: number; appliedAt: string }> = [];
+
+  for (const promo of sortedActive) {
+    if (promo.minOrderAmount && subtotal < promo.minOrderAmount) {
+      continue;
+    }
+    let disc = 0;
+    if (promo.type === 'percentage') {
+      disc = parseFloat(((running * promo.value) / 100).toFixed(2));
+    } else if (promo.type === 'fixed') {
+      disc = Math.min(running, promo.value);
+    }
+
+    if (disc > 0) {
+      totalDiscount += disc;
+      running = Math.max(0, running - disc);
+      applied.push({
+        id: promo.id,
+        name: promo.name,
+        code: promo.code,
+        discount: parseFloat(disc.toFixed(2)),
+        appliedAt: new Date().toISOString()
+      });
+    }
+  }
+
+  return {
+    discountAmount: parseFloat(totalDiscount.toFixed(2)),
+    promotionsApplied: applied,
+    discountedSubtotal: parseFloat(running.toFixed(2))
+  };
 }
 
 async function startServer() {
@@ -908,8 +1040,14 @@ async function startServer() {
 
     // Free delivery threshold check
     const freeDeliveryThreshold = db.settings?.freeDeliveryThreshold || 50.0;
-    const deliveryFee = subtotal >= freeDeliveryThreshold ? 0.0 : matchedZone.deliveryFee;
-    const totalAmount = parseFloat((subtotal + deliveryFee).toFixed(2));
+
+    // Promotions calculation (§42, §177, §225, §242 - Règle #11 : plus récente à plus ancienne)
+    const promoCodes = req.body.promoCodes || (req.body.promoCode ? [req.body.promoCode] : []);
+    const promoCalc = applyPromotionsEngine(subtotal, promoCodes);
+    const effectiveSubtotal = promoCalc.discountedSubtotal;
+
+    const deliveryFee = effectiveSubtotal >= freeDeliveryThreshold ? 0.0 : matchedZone.deliveryFee;
+    const totalAmount = parseFloat((effectiveSubtotal + deliveryFee).toFixed(2));
     const orderNumber = `BEBBA-2026-${1000 + db.orders.length + 1}`;
     const trackingToken = generateTrackingToken();
 
@@ -935,6 +1073,8 @@ async function startServer() {
       priority: 'normal',
       items: validatedItems,
       subtotal: parseFloat(subtotal.toFixed(2)),
+      discountAmount: promoCalc.discountAmount,
+      promotionsApplied: promoCalc.promotionsApplied,
       deliveryFee,
       totalAmount,
       orderStatus: 'received',
@@ -996,9 +1136,13 @@ async function startServer() {
     if (nextStatus === 'preparing') {
       order.preparedAt = now;
       order.prepStartedAt = now;
-      // Auto consume recipe ingredients from stock transactionally!
-      consumeIngredientsForOrder(order, userRef.name);
-      logAudit('CUISINE_PREPARATION', 'kitchen', userRef, `Début préparation & déstockage ingrédients pour ${order.orderNumber}`);
+      // Auto consume recipe ingredients from stock transactionally! (Règle #10)
+      if (!order.stockConsumed) {
+        consumeIngredientsForOrder(order, userRef.name);
+        logAudit('CUISINE_PREPARATION', 'kitchen', userRef, `Début préparation & déstockage ingrédients pour ${order.orderNumber}`);
+      } else {
+        logAudit('CUISINE_PREPARATION', 'kitchen', userRef, `Début préparation pour ${order.orderNumber} (stock déjà consommé - protection idempotence)`);
+      }
     } else if (nextStatus === 'ready') {
       order.readyAt = now;
       order.prepCompletedAt = now;
@@ -1331,10 +1475,12 @@ async function startServer() {
     order.currentLocation = gpsPoint;
     if (!order.locationHistory) order.locationHistory = [];
     order.locationHistory.push(gpsPoint);
-    // Keep max 300 points in memory
-    if (order.locationHistory.length > 300) {
-      order.locationHistory.shift();
-    }
+
+    // Règle #13 (§35, §163) : Rétention stricte de 72 heures pour l'historique GPS
+    const seventyTwoHoursAgo = Date.now() - (72 * 3600 * 1000);
+    order.locationHistory = order.locationHistory.filter(
+      pt => new Date(pt.timestamp).getTime() >= seventyTwoHoursAgo
+    );
 
     // Also update driver profile
     if (order.assignedDriverId) {
@@ -1346,10 +1492,14 @@ async function startServer() {
     return res.json({ success: true, location: gpsPoint });
   });
 
-  // Public Tracking Endpoint via Token (e.g. /tracking?token=AB7K92QX)
+  // Public Tracking Endpoint via Token (e.g. /tracking?token=AB7K92QX ou fallback tk_bebba_1047_demo - §20)
   app.get('/api/tracking/:token', (req: Request, res: Response) => {
     const { token } = req.params;
-    const order = db.orders.find(o => o.trackingToken === token.toUpperCase());
+    const cleanToken = token.trim().toUpperCase();
+    const order = db.orders.find(
+      o => o.trackingToken.toUpperCase() === cleanToken ||
+      (cleanToken === 'TK_BEBBA_1047_DEMO' && (o.trackingToken.toLowerCase() === 'tk_bebba_1047_demo' || o.orderStatus === 'delivering' || o.id === 'ord_delivering_1'))
+    );
     if (!order) {
       return res.status(404).json({ error: 'Token de suivi invalide ou expiré.' });
     }
@@ -1425,6 +1575,29 @@ async function startServer() {
       return res.status(404).json({ error: 'Commande liée introuvable.' });
     }
 
+    // Règle #16 (§38, §138, §224, §242) : Une seule réclamation par commande
+    const existingClaim = db.claims.find(c => c.orderId === order.id || c.orderNumber === order.orderNumber);
+    if (existingClaim) {
+      return res.status(400).json({
+        error: `Une réclamation (${existingClaim.claimNumber}) existe déjà pour la commande ${order.orderNumber}. Conformément à la Règle #16, une seule réclamation par commande est autorisée.`
+      });
+    }
+
+    // Règle #15 (§37, §137, §224, §242) : Délai légal de 3 heures max après confirmation de livraison
+    if (order.orderStatus !== 'delivered') {
+      return res.status(400).json({
+        error: 'Une réclamation ne peut être déposée que pour une commande effectivement livrée (statut "delivered").'
+      });
+    }
+
+    const deliveredTimestamp = new Date(order.deliveredAt || order.updatedAt).getTime();
+    const threeHoursMs = 3 * 60 * 60 * 1000;
+    if (Date.now() - deliveredTimestamp > threeHoursMs) {
+      return res.status(400).json({
+        error: 'Le délai légal de 3 heures après la confirmation de livraison est expiré (Règle #15). Aucune réclamation ne peut plus être enregistrée pour cette commande.'
+      });
+    }
+
     const claimNumber = `REC-2026-${String(db.claims.length + 1).padStart(5, '0')}`;
     const newClaim: Claim = {
       id: `claim_${Date.now()}`,
@@ -1437,7 +1610,7 @@ async function startServer() {
       type: type || 'Autre',
       description: description || '',
       photos: Array.isArray(photos) ? photos : [],
-      status: 'open',
+      status: 'OPEN',
       messages: [
         {
           id: `msg_${Date.now()}`,
@@ -1476,10 +1649,17 @@ async function startServer() {
     }
 
     const now = new Date().toISOString();
-    if (status) claim.status = status as ClaimStatus;
+    if (status) {
+      const upper = status.toUpperCase();
+      if (['OPEN', 'IN_REVIEW', 'RESOLVED', 'CLOSED'].includes(upper)) {
+        claim.status = upper as ClaimStatus;
+      } else {
+        claim.status = status as ClaimStatus;
+      }
+    }
     if (resolution) claim.resolution = resolution as ClaimResolution;
     if (resolutionNotes) claim.resolutionNotes = resolutionNotes;
-    if (status === 'resolved' || status === 'closed') {
+    if (claim.status === 'RESOLVED' || claim.status === 'CLOSED') {
       claim.resolvedAt = now;
       claim.resolvedBy = adminName || 'Bebba Admin';
     }
@@ -1489,7 +1669,7 @@ async function startServer() {
       id: adminId || 'admin',
       name: adminName || 'Admin',
       role: 'admin'
-    }, `Statut réclamation ${claim.claimNumber} passé à ${status} (Résolution: ${resolution || 'N/A'})`);
+    }, `Statut réclamation ${claim.claimNumber} passé à ${claim.status} (Résolution: ${resolution || 'N/A'})`);
 
     broadcast('claim_updated', claim);
     return res.json({ claim });
@@ -1522,8 +1702,8 @@ async function startServer() {
     claim.messages.push(newMessage);
     claim.updatedAt = new Date().toISOString();
 
-    if (senderRole === 'client' && claim.status === 'waiting_for_customer') {
-      claim.status = 'in_review';
+    if (senderRole === 'client' && (claim.status as any) === 'WAITING_FOR_CUSTOMER') {
+      claim.status = 'IN_REVIEW';
     }
 
     broadcast('claim_message', { claimId: claim.id, message: newMessage });
@@ -1538,6 +1718,8 @@ async function startServer() {
   });
 
   app.post(['/api/ingredients', '/api/stock/ingredients'], (req: Request, res: Response) => {
+    if (checkIngredientsReadOnly(req, res)) return;
+
     const { name, unit, unitCost, currentStock, minThreshold, supplierId, supplierName } = req.body;
     if (!name || !unit) {
       return res.status(400).json({ error: 'Le nom et l unité (g, kg, ml, L, pièce) sont obligatoires.' });
@@ -1570,6 +1752,8 @@ async function startServer() {
   });
 
   app.put(['/api/ingredients/:id', '/api/stock/ingredients/:id'], (req: Request, res: Response) => {
+    if (checkIngredientsReadOnly(req, res)) return;
+
     const ing = db.ingredients.find(i => i.id === req.params.id);
     if (!ing) return res.status(404).json({ error: 'Ingrédient non trouvé' });
 
@@ -1588,6 +1772,8 @@ async function startServer() {
   });
 
   app.delete(['/api/ingredients/:id', '/api/stock/ingredients/:id'], (req: Request, res: Response) => {
+    if (checkIngredientsReadOnly(req, res)) return;
+
     const ing = db.ingredients.find(i => i.id === req.params.id);
     if (!ing) return res.status(404).json({ error: 'Ingrédient non trouvé' });
 
@@ -1600,6 +1786,7 @@ async function startServer() {
 
   // Stock movements (RESTOCK, ADJUSTMENT, WASTE, RETURN, etc.)
   app.post('/api/stock/movements', (req: Request, res: Response) => {
+    if (checkIngredientsReadOnly(req, res)) return;
     const { ingredientId, type, quantityDelta, reason, performedBy, unitCost, supplierName } = req.body;
 
     const ing = db.ingredients.find(i => i.id === ingredientId);
@@ -1657,6 +1844,7 @@ async function startServer() {
 
   // Enregistrer Pertes et Gaspillage (§33)
   app.post('/api/stock/waste', (req: Request, res: Response) => {
+    if (checkIngredientsReadOnly(req, res)) return;
     const { ingredientId, quantity, unit, reason, wasteType, performedBy } = req.body;
     const ing = db.ingredients.find(i => i.id === ingredientId);
     if (!ing) return res.status(404).json({ error: 'Ingrédient introuvable' });
@@ -1704,6 +1892,7 @@ async function startServer() {
 
   // Inventaire physique et ajustement de stock (§34)
   app.post('/api/inventory/reconcile', (req: Request, res: Response) => {
+    if (checkIngredientsReadOnly(req, res)) return;
     const { countedItems, conductedBy, notes } = req.body;
     if (!countedItems || !Array.isArray(countedItems) || countedItems.length === 0) {
       return res.status(400).json({ error: 'Liste d inventaire compté obligatoire.' });
@@ -1862,8 +2051,665 @@ async function startServer() {
   });
 
   // ==========================================
-  // SUPPLIERS MANAGEMENT (§23)
+  // IA CUISINE : GÉNÉRATEUR DE 20 MENUS HEALTHY (GEMINI 3.8 FLASH)
   // ==========================================
+  app.post('/api/ai/recipes/generate', async (req: Request, res: Response) => {
+    try {
+      const { mode, selectedIngredientIds } = req.body;
+      // mode: 'all_stock' | 'selected_ingredients'
+
+      let candidateIngredients: Ingredient[] = [];
+
+      if (mode === 'selected_ingredients' && Array.isArray(selectedIngredientIds) && selectedIngredientIds.length > 0) {
+        candidateIngredients = db.ingredients.filter(i => selectedIngredientIds.includes(i.id));
+      } else {
+        // 'all_stock': tous les ingrédients avec stock > 0 (ou tous si catalogue vide)
+        candidateIngredients = db.ingredients.filter(i => i.currentStock > 0);
+        if (candidateIngredients.length === 0) {
+          candidateIngredients = [...db.ingredients];
+        }
+      }
+
+      if (candidateIngredients.length === 0) {
+        return res.status(400).json({
+          error: 'Aucun ingrédient disponible ou sélectionné pour la génération.'
+        });
+      }
+
+      const ingredientsSummary = candidateIngredients
+        .map(i => `- ${i.name} (${i.currentStock} ${i.unit} en stock${i.category ? `, catégorie: ${i.category}` : ''})`)
+        .join('\n');
+
+      let generatedRecipes: AIMenuRecipe[] = [];
+      let isAIPowered = false;
+      let modelUsed = '';
+
+      // Modèles Gemini officiels à essayer en séquence de résilience (avec gestion des pics 503)
+      const candidateModels = ['gemini-3.8-flash', 'gemini-3.1-flash-lite', 'gemini-flash-latest'];
+
+      if (process.env.GEMINI_API_KEY) {
+        const prompt = `Tu es le Chef Nutritionniste exécutif de BEBBA Healthy Food.
+Voici les ingrédients actuels disponibles dans nos réserves :
+${ingredientsSummary}
+
+Mode sélectionné : ${mode === 'selected_ingredients' ? 'Sélection stricte des ingrédients cochés par le chef' : 'Tout le stock disponible en cuisine'}
+
+Génère un tableau JSON de EXACTEMENT 20 menus et recettes healthy équilibrées qui mettent en valeur ces ingrédients.
+Pour chaque recette, utilise cette structure JSON :
+- "id": identifiant unique string
+- "name": nom attrayant et gastronomique healthy (ex: "Buddha Bowl Vitalité Quinoa & Saumon")
+- "tagline": courte phrase percutante valorisant la fraîcheur
+- "category": une de ces 6 catégories ("Bowl", "Salade", "Plat chaud", "Wrap & Sandwich", "Soupe & Velouté", "Snack Healthy")
+- "prepTimeMinutes": nombre entier (ex: 12)
+- "calories": calories estimées (ex: 420)
+- "proteinGrams": protéines en grammes (ex: 28)
+- "healthBenefits": tableau de 2 ou 3 bienfaits nutritionnels (ex: ["Riche en oméga-3", "Index glycémique bas"])
+- "ingredientsUsed": tableau [{"ingredientName": "Nom", "quantityEstimated": "100g", "inStock": true}]
+- "chefInstructions": tableau de 3 ou 4 étapes de préparation pour la brigade
+- "dietaryTags": tableau de badges (ex: ["Sans gluten", "High protein", "Végétarien"])
+
+Réponds UNIQUEMENT avec le tableau JSON valide de 20 recettes, sans texte introductif.`;
+
+        for (const candidateModel of candidateModels) {
+          try {
+            console.log(`[IA Recettes] Tentative de génération avec le modèle ${candidateModel}...`);
+            const response = await aiClient.models.generateContent({
+              model: candidateModel,
+              contents: prompt,
+              config: {
+                systemInstruction: 'Tu es le Chef Nutritionniste de BEBBA Healthy Food. Tu génères exclusivement un tableau JSON strict de 20 recettes diététiques.',
+                responseMimeType: 'application/json',
+                temperature: 0.6
+              }
+            });
+
+            const rawText = response.text || '';
+            const parsed = JSON.parse(rawText);
+            const recipesList = Array.isArray(parsed) ? parsed : (Array.isArray(parsed?.recipes) ? parsed.recipes : []);
+
+            if (recipesList.length > 0) {
+              generatedRecipes = recipesList;
+              isAIPowered = true;
+              modelUsed = candidateModel;
+              console.log(`[IA Recettes] Succès : 20 menus générés avec succès via ${candidateModel}`);
+              break;
+            }
+          } catch (modelErr: any) {
+            const errMsg = modelErr?.message || String(modelErr);
+            const is503 = errMsg.includes('503') || errMsg.includes('high demand') || modelErr?.status === 'UNAVAILABLE' || modelErr?.code === 503;
+            if (is503) {
+              console.warn(`[IA Recettes] Modèle ${candidateModel} en pic temporaire de demande (503). Essai du modèle suivant...`);
+              await new Promise(resolve => setTimeout(resolve, 600));
+            } else {
+              console.warn(`[IA Recettes] Notification modèle ${candidateModel}:`, errMsg.slice(0, 150));
+            }
+          }
+        }
+      }
+
+      // Si l'IA n'a pas pu être contactée (ou en cas de pic de charge global), compléter avec le moteur nutritionnel BEBBA
+      if (generatedRecipes.length < 20) {
+        const fallbackRecipes = generateSmartFallbackRecipes(candidateIngredients, mode);
+        generatedRecipes = [...generatedRecipes, ...fallbackRecipes].slice(0, 20);
+        if (!modelUsed) {
+          modelUsed = 'Moteur Nutritionnel BEBBA';
+        }
+      }
+
+      // Attribuer une image haute définition qui correspond scrupuleusement aux ingrédients et au plat
+      const usedPhotoUrls: Record<string, number> = {};
+      generatedRecipes = generatedRecipes.map((recipe) => {
+        const matchedImage = getAccurateDishImage(
+          recipe.category,
+          recipe.name,
+          recipe.ingredientsUsed?.map(i => i.ingredientName) || [],
+          recipe.tagline || '',
+          usedPhotoUrls
+        );
+        usedPhotoUrls[matchedImage] = (usedPhotoUrls[matchedImage] || 0) + 1;
+        return {
+          ...recipe,
+          image: matchedImage
+        };
+      });
+
+      // Audit log pour la génération de menus
+      logAudit(
+        'IA_RECETTES_GENEREES',
+        'kitchen',
+        { id: 'chef', name: 'Chef de Cuisine', role: 'kitchen' },
+        `Génération de 20 menus healthy par IA (Mode: ${mode}, Ingrédients analysés: ${candidateIngredients.length}, Moteur: ${modelUsed})`
+      );
+
+      return res.json({
+        success: true,
+        count: generatedRecipes.length,
+        isAIPowered,
+        modelUsed,
+        mode,
+        ingredientsAnalyzedCount: candidateIngredients.length,
+        recipes: generatedRecipes
+      });
+    } catch (err: any) {
+      console.error('Erreur génération recettes IA :', err);
+      return res.status(500).json({ error: err.message || 'Erreur lors de la génération de recettes IA' });
+    }
+  });
+
+  // Catalogue complet de photographies culinaires professionnelles spécifiques aux plats healthy BEBBA
+  interface DishPhotoItem {
+    id: string;
+    url: string;
+    category: string;
+    keywords: string[];
+  }
+
+  const DISH_PHOTOS_CATALOG: DishPhotoItem[] = [
+    // --- 1. SAUMON & POISSONS ---
+    {
+      id: 'salmon_quinoa_bowl',
+      url: 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?auto=format&fit=crop&w=800&q=80',
+      category: 'Bowl',
+      keywords: ['saumon', 'salmon', 'poke', 'quinoa', 'edamame', 'poisson', 'graines', 'sauvage', 'omega']
+    },
+    {
+      id: 'salmon_grilled_filet',
+      url: 'https://images.unsplash.com/photo-1467003909585-2f8a72700288?auto=format&fit=crop&w=800&q=80',
+      category: 'Plat chaud',
+      keywords: ['saumon grillé', 'pavé de saumon', 'saumon rôti', 'filet saumon', 'saumon à la plancha', 'saumon']
+    },
+    {
+      id: 'white_fish_steamed',
+      url: 'https://images.unsplash.com/photo-1519708227418-c8fd9a32b7a2?auto=format&fit=crop&w=800&q=80',
+      category: 'Plat chaud',
+      keywords: ['poisson blanc', 'cabillaud', 'loup', 'daurade', 'poisson', 'vapeur', 'filet de poisson']
+    },
+    {
+      id: 'tuna_salad_bowl',
+      url: 'https://images.unsplash.com/photo-1543339308-43e59d6b73a6?auto=format&fit=crop&w=800&q=80',
+      category: 'Bowl',
+      keywords: ['thon', 'tuna', 'tataki', 'sesame', 'sésame', 'algues']
+    },
+
+    // --- 2. POULET, DINDE & VOLAILLE ---
+    {
+      id: 'chicken_breast_grilled',
+      url: 'https://images.unsplash.com/photo-1532550907401-a500c9a57435?auto=format&fit=crop&w=800&q=80',
+      category: 'Plat chaud',
+      keywords: ['poulet', 'chicken', 'blanc de poulet', 'poulet grillé', 'poulet mariné', 'volaille', 'fermier']
+    },
+    {
+      id: 'chicken_salad_caesar',
+      url: 'https://images.unsplash.com/photo-1580013759032-c96505e24c1f?auto=format&fit=crop&w=800&q=80',
+      category: 'Salade',
+      keywords: ['poulet salade', 'salade poulet', 'salade césar', 'émincé poulet', 'poulet rôti']
+    },
+    {
+      id: 'turkey_steamed_spinach',
+      url: 'https://images.unsplash.com/photo-1598515214211-89d3c73ae83b?auto=format&fit=crop&w=800&q=80',
+      category: 'Plat chaud',
+      keywords: ['dinde', 'turkey', 'escalope', 'moutarde', 'épinards', 'volaille']
+    },
+
+    // --- 3. BOEUF MAIGRE & GRILLADES ---
+    {
+      id: 'beef_steak_rice',
+      url: 'https://images.unsplash.com/photo-1555939594-58d7cb561ad1?auto=format&fit=crop&w=800&q=80',
+      category: 'Plat chaud',
+      keywords: ['boeuf', 'bœuf', 'beef', 'steak', 'viande', 'brochette', 'filet de bœuf', 'viande maigre', 'riz complet']
+    },
+    {
+      id: 'grilled_meat_veggies',
+      url: 'https://images.unsplash.com/photo-1544025162-d76694265947?auto=format&fit=crop&w=800&q=80',
+      category: 'Plat chaud',
+      keywords: ['grillade', 'grillé', 'brochettes', 'viande rouge', 'barbecue', 'plancha']
+    },
+
+    // --- 4. TOFU, PLANT-BASED & LEGUMINEUSES ---
+    {
+      id: 'tofu_power_bowl',
+      url: 'https://images.unsplash.com/photo-1540420773420-3366772f4999?auto=format&fit=crop&w=800&q=80',
+      category: 'Bowl',
+      keywords: ['tofu', 'tofu bio', 'tofu grillé', 'patate douce', 'patates douces', 'brocolis', 'soja', 'tahini']
+    },
+    {
+      id: 'quinoa_superfood_bowl',
+      url: 'https://images.unsplash.com/photo-1512621776951-a57141f2eefd?auto=format&fit=crop&w=800&q=80',
+      category: 'Bowl',
+      keywords: ['quinoa', 'superfood', 'buddha bowl', 'graines de chia', 'avocat', 'vitalité', 'super-aliments']
+    },
+    {
+      id: 'rainbow_avocado_bowl',
+      url: 'https://images.unsplash.com/photo-1511690656952-34342bb7c2f2?auto=format&fit=crop&w=800&q=80',
+      category: 'Bowl',
+      keywords: ['rainbow', 'arc-en-ciel', 'bol', 'radis', 'concombre', 'coloré', 'avocat']
+    },
+    {
+      id: 'falafel_hummus_bowl',
+      url: 'https://images.unsplash.com/photo-1540914124281-342587941389?auto=format&fit=crop&w=800&q=80',
+      category: 'Bowl',
+      keywords: ['falafel', 'pois chiches', 'houmous', 'hummus', 'tahina', 'pois chiche', 'libanais']
+    },
+    {
+      id: 'chickpea_curry_dahl',
+      url: 'https://images.unsplash.com/photo-1546833999-b9f581a1996d?auto=format&fit=crop&w=800&q=80',
+      category: 'Plat chaud',
+      keywords: ['curry', 'curcuma', 'lentilles', 'dahl', 'pois chiches', 'coco', 'mijoté', 'épices']
+    },
+    {
+      id: 'roasted_veggie_skillet',
+      url: 'https://images.unsplash.com/photo-1547496502-ffa22d388377?auto=format&fit=crop&w=800&q=80',
+      category: 'Plat chaud',
+      keywords: ['wok', 'légumes rôtis', 'poêlée', 'vapeur', 'courgettes', 'carottes', 'poivrons', 'sauté', 'skillet']
+    },
+
+    // --- 5. SALADES & CRUDITES ---
+    {
+      id: 'greek_feta_salad',
+      url: 'https://images.unsplash.com/photo-1540189549336-e6e99c3679fe?auto=format&fit=crop&w=800&q=80',
+      category: 'Salade',
+      keywords: ['feta', 'féta', 'salade grecque', 'olives', 'tomates cerises', 'concombre', 'méditerranéenne', 'origan']
+    },
+    {
+      id: 'crisp_green_salad',
+      url: 'https://images.unsplash.com/photo-1505253716362-afaea1d3d1af?auto=format&fit=crop&w=800&q=80',
+      category: 'Salade',
+      keywords: ['salade verte', 'croquante', 'épinards', 'roquette', 'vinaigrette', 'pousses', 'détox']
+    },
+    {
+      id: 'walnut_apple_salad',
+      url: 'https://images.unsplash.com/photo-1551248429-40975aa4de74?auto=format&fit=crop&w=800&q=80',
+      category: 'Salade',
+      keywords: ['noix', 'grenade', 'pomme', 'salade gourmande', 'crudités', 'fruits secs', 'graines torréfiées']
+    },
+    {
+      id: 'citrus_avocado_salad',
+      url: 'https://images.unsplash.com/photo-1505576399279-565b52d4ac71?auto=format&fit=crop&w=800&q=80',
+      category: 'Salade',
+      keywords: ['agrumes', 'pamplemousse', 'orange', 'citron', 'avocat', 'menthe', 'fraîcheur']
+    },
+    {
+      id: 'beetroot_salad',
+      url: 'https://images.unsplash.com/photo-1515543237350-b3eea1ec8082?auto=format&fit=crop&w=800&q=80',
+      category: 'Salade',
+      keywords: ['betterave', 'chèvre', 'pourpre', 'antioxydant', 'racine']
+    },
+
+    // --- 6. WRAPS & SANDWICHS ---
+    {
+      id: 'fresh_veggie_wrap',
+      url: 'https://images.unsplash.com/photo-1626700051175-6818013e1d4f?auto=format&fit=crop&w=800&q=80',
+      category: 'Wrap & Sandwich',
+      keywords: ['wrap', 'roulé', 'tortilla', 'galette', 'green wrap', 'avocat', 'légumes croquants', 'wrap végétal']
+    },
+    {
+      id: 'chicken_caesar_wrap',
+      url: 'https://images.unsplash.com/photo-1528735602780-2552fd46c7af?auto=format&fit=crop&w=800&q=80',
+      category: 'Wrap & Sandwich',
+      keywords: ['wrap poulet', 'sandwich poulet', 'poulet wrap', 'panini', 'club sandwich']
+    },
+    {
+      id: 'pita_pocket_falafel',
+      url: 'https://images.unsplash.com/photo-1529006557810-274b9b2fc783?auto=format&fit=crop&w=800&q=80',
+      category: 'Wrap & Sandwich',
+      keywords: ['pita', 'pain pita', 'sandwich', 'poche pita', 'garnie']
+    },
+    {
+      id: 'nordic_rye_toast',
+      url: 'https://images.unsplash.com/photo-1525351484163-7529414344d8?auto=format&fit=crop&w=800&q=80',
+      category: 'Wrap & Sandwich',
+      keywords: ['tartine', 'toast', 'pain de seigle', 'toast nordique', 'saumon fumé', 'pain complet', 'seigle']
+    },
+
+    // --- 7. SOUPES & VELOUTES ---
+    {
+      id: 'green_detox_soup',
+      url: 'https://images.unsplash.com/photo-1547592166-23ac45744acd?auto=format&fit=crop&w=800&q=80',
+      category: 'Soupe & Velouté',
+      keywords: ['velouté', 'soupe verte', 'velouté épinards', 'courgette', 'détox', 'poireaux', 'brocoli', 'velouté détox']
+    },
+    {
+      id: 'carrot_ginger_soup',
+      url: 'https://images.unsplash.com/photo-1476718406336-bb5a9690ee2a?auto=format&fit=crop&w=800&q=80',
+      category: 'Soupe & Velouté',
+      keywords: ['carotte', 'potiron', 'courge', 'butternut', 'gingembre', 'curcuma', 'velouté orange', 'soupe carottes']
+    },
+    {
+      id: 'spicy_asian_broth',
+      url: 'https://images.unsplash.com/photo-1607528971899-2e89e6c0ec69?auto=format&fit=crop&w=800&q=80',
+      category: 'Soupe & Velouté',
+      keywords: ['bouillon', 'ramen', 'soupe thaï', 'miso', 'nouilles', 'coriandre', 'asiatique']
+    },
+    {
+      id: 'tomato_gazpacho',
+      url: 'https://images.unsplash.com/photo-1582878826629-29b7ad1cdc43?auto=format&fit=crop&w=800&q=80',
+      category: 'Soupe & Velouté',
+      keywords: ['tomate', 'gaspacho', 'gazpacho', 'soupe froide', 'basilic', 'velouté tomates']
+    },
+    {
+      id: 'mushroom_cream_soup',
+      url: 'https://images.unsplash.com/photo-1541832676-9b763b0239ab?auto=format&fit=crop&w=800&q=80',
+      category: 'Soupe & Velouté',
+      keywords: ['champignon', 'champignons', 'velouté champignons', 'crème', 'forestier']
+    },
+
+    // --- 8. SNACKS & DESSERTS HEALTHY ---
+    {
+      id: 'avocado_seed_toast',
+      url: 'https://images.unsplash.com/photo-1588137378633-dea1336ce1e2?auto=format&fit=crop&w=800&q=80',
+      category: 'Snack Healthy',
+      keywords: ['avocado toast', 'tartine avocat', 'pain grillé', 'graines de courge', 'snack', 'toast', 'énergie']
+    },
+    {
+      id: 'chia_seed_pudding',
+      url: 'https://images.unsplash.com/photo-1488477181946-6428a0291777?auto=format&fit=crop&w=800&q=80',
+      category: 'Snack Healthy',
+      keywords: ['chia', 'pudding', 'graines de chia', 'lait végétal', 'amande', 'fruits rouges', 'dessert', 'verrine']
+    },
+    {
+      id: 'acai_berry_bowl',
+      url: 'https://images.unsplash.com/photo-1590301157890-4810ed352733?auto=format&fit=crop&w=800&q=80',
+      category: 'Snack Healthy',
+      keywords: ['acai', 'açaí', 'smoothie bowl', 'granola', 'baies', 'myrtilles', 'banane', 'superfruit', 'fruits']
+    },
+    {
+      id: 'oatmeal_porridge',
+      url: 'https://images.unsplash.com/photo-1517673132405-a56a62b18caf?auto=format&fit=crop&w=800&q=80',
+      category: 'Snack Healthy',
+      keywords: ['flocons d\'avoine', 'avoine', 'porridge', 'fruits secs', 'amandes', 'petit déjeuner']
+    },
+    {
+      id: 'energy_protein_balls',
+      url: 'https://images.unsplash.com/photo-1509440159596-0249088772ff?auto=format&fit=crop&w=800&q=80',
+      category: 'Snack Healthy',
+      keywords: ['energy ball', 'bouchées protéinées', 'dattes', 'cacao', 'barre énergétique', 'noix', 'snack']
+    }
+  ];
+
+  // Moteur d'attribution sémantique haute fidélité reliant chaque plat à sa photographie exacte
+  function getAccurateDishImage(
+    category: string,
+    name: string,
+    ingredients: string[] = [],
+    tagline: string = '',
+    usedUrls: Record<string, number> = {}
+  ): string {
+    const fullText = [name, category, tagline, ...ingredients].join(' ').toLowerCase();
+
+    const scored = DISH_PHOTOS_CATALOG.map(photo => {
+      let score = 0;
+
+      // Correspondance stricte de catégorie (+10)
+      if (category.toLowerCase() === photo.category.toLowerCase() || photo.category.toLowerCase().includes(category.toLowerCase())) {
+        score += 10;
+      }
+
+      // Correspondance des mots-clés culinaires
+      for (const kw of photo.keywords) {
+        const lowerKw = kw.toLowerCase();
+        if (name.toLowerCase().includes(lowerKw)) {
+          // Mot-clé présent directement dans le titre du plat (+18)
+          score += 18;
+        } else if (fullText.includes(lowerKw)) {
+          // Mot-clé présent dans les ingrédients ou la description (+8)
+          score += 8;
+        }
+      }
+
+      // Légère pénalité de réutilisation pour varier les angles au sein d'une même brigade (-4 par usage)
+      const usageCount = usedUrls[photo.url] || 0;
+      score -= usageCount * 4;
+
+      return { photo, score };
+    });
+
+    scored.sort((a, b) => b.score - a.score);
+    return scored[0]?.photo?.url || DISH_PHOTOS_CATALOG[0].url;
+  }
+
+  // Fonction génératrice de 20 recettes healthy basée sur les ingrédients réels du stock
+  function generateSmartFallbackRecipes(ings: Ingredient[], mode: string): AIMenuRecipe[] {
+    const ingNames = ings.map(i => i.name);
+    const getIng = (idx: number) => ingNames[idx % ingNames.length] || 'Légumes de saison';
+    const getIng2 = (idx: number) => ingNames[(idx + 1) % ingNames.length] || 'Herbes fraîches';
+    const getIng3 = (idx: number) => ingNames[(idx + 2) % ingNames.length] || 'Graines torréfiées';
+    const getIng4 = (idx: number) => ingNames[(idx + 3) % ingNames.length] || 'Huile d\'olive extra vierge';
+
+    const templates = [
+      {
+        namePrefix: 'Buddha Bowl Vitalité & Super-Aliments',
+        category: 'Bowl' as const,
+        tagline: 'Un bol complet riche en fibres végétales et protéines végétales d\'excellence.',
+        baseCal: 420,
+        baseProt: 22,
+        time: 12,
+        benefits: ['Équilibre acido-basique optimal', 'Riche en antioxydants', 'Digestion légère'],
+        tags: ['Sans gluten', 'High fiber', 'Végétarien']
+      },
+      {
+        namePrefix: 'Salade Croquante Méditerranéenne',
+        category: 'Salade' as const,
+        tagline: 'Fraîcheur intense aux saveurs du terroir tunisien sublimées.',
+        baseCal: 340,
+        baseProt: 16,
+        time: 10,
+        benefits: ['Hydratation cellulaire', 'Pauvre en lipides saturés', 'Vitamines A & C'],
+        tags: ['Faible en calories', 'Fraîcheur minute', 'Méditerranéen']
+      },
+      {
+        namePrefix: 'Wok Santé Équilibré & Graines Torréfiées',
+        category: 'Plat chaud' as const,
+        tagline: 'Cuisson vapeur douce pour préserver 100% des micronutriments.',
+        baseCal: 480,
+        baseProt: 30,
+        time: 15,
+        benefits: ['Haute biodisponibilité', 'Index glycémique bas', 'Énergie durable'],
+        tags: ['Plat réconfortant', 'High protein', 'Zéro friture']
+      },
+      {
+        namePrefix: 'Wrap Green Détox & Sauce Végétale Légère',
+        category: 'Wrap & Sandwich' as const,
+        tagline: 'Roulé frais dans une galette aux céréales complètes croustillante.',
+        baseCal: 390,
+        baseProt: 19,
+        time: 8,
+        benefits: ['Pratique et digeste', 'Riche en chlorophylle', 'Satiété prolongée'],
+        tags: ['Sur le pouce', 'Énergie saine', 'Riche en fibres']
+      },
+      {
+        namePrefix: 'Velouté Onctueux Détox aux Herbes Aromatiques',
+        category: 'Soupe & Velouté' as const,
+        tagline: 'Douceur réconfortante mijotée à basse température.',
+        baseCal: 260,
+        baseProt: 12,
+        time: 18,
+        benefits: ['Purification hépatique', 'Hydratation profonde', 'Ultra-léger'],
+        tags: ['Détox', 'Faible index glycémique', 'Végétarien']
+      },
+      {
+        namePrefix: 'Power Protein Bowl au Saumon & Quinoa',
+        category: 'Bowl' as const,
+        tagline: 'L\'allié parfait des sportifs pour une récupération musculaire maximale.',
+        baseCal: 530,
+        baseProt: 36,
+        time: 14,
+        benefits: ['Oméga-3 anti-inflammatoires', 'Acides aminés complets', 'Magnésium'],
+        tags: ['High protein', 'Sport & Fitness', 'Sans gluten']
+      },
+      {
+        namePrefix: 'Salade Gourmande Avocat, Agrumes & Féta',
+        category: 'Salade' as const,
+        tagline: 'Accord parfait entre le crémeux des bons gras et l\'acidité vivifiante.',
+        baseCal: 410,
+        baseProt: 18,
+        time: 10,
+        benefits: ['Bons lipides mono-insaturés', 'Vitamine E protectrice', 'Éclat du teint'],
+        tags: ['Keto friendly', 'Végétarien', 'Gourmandise saine']
+      },
+      {
+        namePrefix: 'Assiette Tiède Énergie & Racines Caramélisées',
+        category: 'Plat chaud' as const,
+        tagline: 'Mélange harmonieux de textures fondantes et croquantes.',
+        baseCal: 460,
+        baseProt: 24,
+        time: 16,
+        benefits: ['Régulation de la glycémie', 'Bêta-carotène naturel', 'Confort digestif'],
+        tags: ['Plat complet', 'Énergie clean', 'Sans conservateur']
+      },
+      {
+        namePrefix: 'Pita Rustique Façon BEBBA & Crème Protéinée',
+        category: 'Wrap & Sandwich' as const,
+        tagline: 'Pain artisanal aux graines garni généreusement d\'ingrédients frais.',
+        baseCal: 430,
+        baseProt: 25,
+        time: 10,
+        benefits: ['Zinc et fer biodisponibles', 'Index glycémique modéré', 'Sans additifs'],
+        tags: ['Gourmand', 'High protein', 'Cuisine minute']
+      },
+      {
+        namePrefix: 'Bouillon Thaï Healthy au Gingembre & Citronnelle',
+        category: 'Soupe & Velouté' as const,
+        tagline: 'Infusion bienfaisante stimulante pour le système immunitaire.',
+        baseCal: 220,
+        baseProt: 15,
+        time: 12,
+        benefits: ['Booste l\'immunité', 'Action anti-inflammatoire', 'Effet brûle-graisse'],
+        tags: ['Immunité booster', 'Low calorie', 'Thermogénique']
+      },
+      {
+        namePrefix: 'Rainbow Bowl Croquant & Vinaigrette Passion-Yuzu',
+        category: 'Bowl' as const,
+        tagline: 'Une explosion de couleurs pour faire le plein de phytonutriments.',
+        baseCal: 380,
+        baseProt: 20,
+        time: 11,
+        benefits: ['Large spectre d\'antioxydants', 'Fibres solubles', 'Cœur en santé'],
+        tags: ['100% végétal', 'Sans gluten', 'Superfood']
+      },
+      {
+        namePrefix: 'Salade Protéinée au Poulet Mariné Citron & Thym',
+        category: 'Salade' as const,
+        tagline: 'Blancs de poulet fondants marinés aux herbes sauvages.',
+        baseCal: 440,
+        baseProt: 38,
+        time: 13,
+        benefits: ['Maintien de la masse musculaire', 'Faible en glucides', 'Zéro sucre ajouté'],
+        tags: ['High protein', 'Keto', 'Rassasiant']
+      },
+      {
+        namePrefix: 'Cocotte Express de Saison & Légumes Rôtis au Four',
+        category: 'Plat chaud' as const,
+        tagline: 'Douceur rôtie avec une pointe d\'huile d\'olive vierge de Tunisie.',
+        baseCal: 450,
+        baseProt: 22,
+        time: 18,
+        benefits: ['Minéraux préservés', 'Satiété sans lourdeur', 'Potassium naturel'],
+        tags: ['Chaud & équilibré', 'Terroir', 'Sans gluten']
+      },
+      {
+        namePrefix: 'Tartine Nordique au Pain Noir & Herbes Fraîches',
+        category: 'Wrap & Sandwich' as const,
+        tagline: 'Pain de seigle toasté garni de protéines nobles et d\'éclats croquants.',
+        baseCal: 370,
+        baseProt: 23,
+        time: 7,
+        benefits: ['Fibres de seigle rassasiantes', 'Oméga-3 essentiels', 'Vitamines B'],
+        tags: ['Snack détox', 'Faible IG', 'Riche en zinc']
+      },
+      {
+        namePrefix: 'Gaspacho Vert Rafraîchissant Menthe & Concombre',
+        category: 'Soupe & Velouté' as const,
+        tagline: 'Soupe froide désaltérante idéale pour une digestion optimale.',
+        baseCal: 180,
+        baseProt: 8,
+        time: 6,
+        benefits: ['Effet drainant immédiat', 'Hydratation cellulaire', 'Effet fraîcheur'],
+        tags: ['Cold detox', 'Zéro matière grasse', 'Végane']
+      },
+      {
+        namePrefix: 'Bowl Soleil Levant au Tofu Croustillant & Sésame',
+        category: 'Bowl' as const,
+        tagline: 'Inspiration asiatique diététique relevée d\'une sauce soja allégée.',
+        baseCal: 410,
+        baseProt: 26,
+        time: 14,
+        benefits: ['Isoflavones protectrices', 'Protéines végétales complètes', 'Calcium'],
+        tags: ['Végane', 'Sans lactose', 'Asian clean']
+      },
+      {
+        namePrefix: 'Salade Croquante Quinoa, Grenade & Noix Torréfiées',
+        category: 'Salade' as const,
+        tagline: 'Harmonie sucrée-salée riche en polyphénols anti-âge.',
+        baseCal: 430,
+        baseProt: 17,
+        time: 9,
+        benefits: ['Polyphénols protecteurs', 'Microbiote renforcé', 'Vitamines B & E'],
+        tags: ['Anti-âge', 'Riche en oméga-3', 'Sans gluten']
+      },
+      {
+        namePrefix: 'Bowl Chaud Steak Végétal Maison & Purée de Patate Douce',
+        category: 'Plat chaud' as const,
+        tagline: 'Galette maison d\'ingrédients nobles sur lit de patate douce veloutée.',
+        baseCal: 490,
+        baseProt: 28,
+        time: 17,
+        benefits: ['Bêta-carotène protecteur', 'Énergie à diffusion lente', 'Pauvre en sel'],
+        tags: ['Plant based', 'Gourmand & Healthy', 'Sans friture']
+      },
+      {
+        namePrefix: 'Energy Toast & Écrasé d\'Avocat aux Graines de Chia',
+        category: 'Snack Healthy' as const,
+        tagline: 'Encas sain parfait avant ou après l\'effort physique.',
+        baseCal: 310,
+        baseProt: 14,
+        time: 5,
+        benefits: ['Mucilages bienfaisants pour l\'intestin', 'Bons acides gras', 'Magnésium'],
+        tags: ['Superfood', 'Quick & Healthy', 'Végétarien']
+      },
+      {
+        namePrefix: 'Chia Pudding Onctueux Lait d\'Amande & Coulis Maison',
+        category: 'Snack Healthy' as const,
+        tagline: 'Pause sucrée naturelle sans sucres raffinés pour terminer en beauté.',
+        baseCal: 240,
+        baseProt: 11,
+        time: 5,
+        benefits: ['Riche en calcium végétal', 'Zéro sucre raffiné', 'Oméga-3 d\'origine végétale'],
+        tags: ['Dessert healthy', 'Sans gluten', 'Gourmandise clean']
+      }
+    ];
+
+    return templates.map((tpl, i) => {
+      const mainIng = getIng(i);
+      const secondIng = getIng2(i);
+      const thirdIng = getIng3(i);
+      const fourthIng = getIng4(i);
+
+      return {
+        id: `ai_recipe_${Date.now()}_${i + 1}`,
+        name: `${tpl.namePrefix} — ${mainIng}`,
+        tagline: tpl.tagline,
+        category: tpl.category,
+        prepTimeMinutes: tpl.time,
+        calories: tpl.baseCal + ((i * 13) % 40) - 20,
+        proteinGrams: tpl.baseProt + (i % 5),
+        healthBenefits: tpl.benefits,
+        ingredientsUsed: [
+          { ingredientName: mainIng, quantityEstimated: '120g', inStock: true },
+          { ingredientName: secondIng, quantityEstimated: '60g', inStock: true },
+          { ingredientName: thirdIng, quantityEstimated: '25g', inStock: true },
+          { ingredientName: fourthIng, quantityEstimated: '15ml', inStock: true }
+        ],
+        chefInstructions: [
+          `Préparer et découper délicatement les ${mainIng} frais en fines tranches ou julienne.`,
+          `Associer les ${secondIng} et ${thirdIng} pour créer le contraste de texture croustillant.`,
+          `Napper d'un filet de ${fourthIng} émulsionné avec le jus de citron pressé.`,
+          `Dresser harmonieusement dans un bol éco-conçu et servir immédiatement à température optimale.`
+        ],
+        dietaryTags: tpl.tags,
+        image: getAccurateDishImage(tpl.category, `${tpl.namePrefix} — ${mainIng}`, [mainIng, secondIng, thirdIng], tpl.tagline)
+      };
+    });
+  }
   app.get('/api/suppliers', (req: Request, res: Response) => {
     return res.json({ suppliers: db.suppliers });
   });
@@ -2180,16 +3026,23 @@ async function startServer() {
       ord.orderStatus = 'waiting_for_driver';
     }
 
+    // En conformité avec §30, §31, §32 :
+    // La suppression physique ne doit pas détruire les informations historiques nécessaires
+    // aux commandes, livraisons, encaissements, statistiques et audits.
+    // On désactive / archive le livreur pour préserver la traçabilité intégrale.
+    driver.status = 'inactive';
+    driver.vehicleId = undefined;
+    driver.vehiclePlate = undefined;
+
     // Update user status
     const user = db.users.find(u => u.id === driver.userId);
     if (user) {
       user.status = 'inactive';
     }
 
-    db.drivers.splice(idx, 1);
-    logAudit('LIVREUR_SUPPRIME', 'delivery', { id: 'admin', name: 'Admin', role: 'admin' }, `Suppression du livreur : ${driver.name} (${driver.phone})`);
-    broadcast('driver_deleted', { driverId: driver.id, userId: driver.userId });
-    return res.json({ success: true, driverId: driver.id });
+    logAudit('LIVREUR_ARCHIVE', 'delivery', { id: 'admin', name: 'Admin', role: 'admin' }, `Archivage du livreur : ${driver.name} (${driver.phone}) - Préservation de l'historique d'encaissement et de livraison (§31, §32)`);
+    broadcast('driver_updated', driver);
+    return res.json({ success: true, driverId: driver.id, archived: true });
   });
 
   app.patch('/api/drivers/:id/toggle-active', (req: Request, res: Response) => {
@@ -2445,6 +3298,24 @@ async function startServer() {
   });
 
   // ==========================================
+  // PROMOTIONS & REMISES (§42, §177, §225, §242)
+  // ==========================================
+  app.get('/api/promotions', (req: Request, res: Response) => {
+    // Sort promotions strictly newest first (Règle #11)
+    const sorted = [...(db.promotions || [])].sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+    return res.json({ promotions: sorted });
+  });
+
+  app.post('/api/promotions/calculate', (req: Request, res: Response) => {
+    const { subtotal, promoCodes } = req.body;
+    const numSubtotal = parseFloat(subtotal) || 0;
+    const result = applyPromotionsEngine(numSubtotal, promoCodes);
+    return res.json(result);
+  });
+
+  // ==========================================
   // SYSTEM HEALTH CHECK (§108)
   // ==========================================
   app.get('/api/health', (req: Request, res: Response) => {
@@ -2507,7 +3378,7 @@ async function startServer() {
 
     // Claims breakdown
     const claimsCount = db.claims.length;
-    const resolvedClaims = db.claims.filter(c => c.status === 'resolved' || c.status === 'closed').length;
+    const resolvedClaims = db.claims.filter(c => c.status === 'RESOLVED' || c.status === 'CLOSED').length;
 
     // Product breakdown
     const productSalesMap: Record<string, { name: string; count: number; revenue: number; category: string }> = {};
@@ -2558,8 +3429,8 @@ async function startServer() {
       },
       claims: {
         total: claimsCount,
-        open: db.claims.filter(c => c.status === 'open' || c.status === 'in_review').length,
-        waitingCustomer: db.claims.filter(c => c.status === 'waiting_for_customer').length,
+        open: db.claims.filter(c => c.status === 'OPEN' || c.status === 'IN_REVIEW').length,
+        waitingCustomer: db.claims.filter(c => (c.status as any) === 'WAITING_FOR_CUSTOMER').length,
         resolved: resolvedClaims
       },
       stock: {

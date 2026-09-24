@@ -15,7 +15,8 @@ import {
   AlertTriangle,
   RefreshCw,
   Radio,
-  ExternalLink
+  ExternalLink,
+  Lock
 } from 'lucide-react';
 
 export const DriverDashboard: React.FC = () => {
@@ -54,14 +55,14 @@ export const DriverDashboard: React.FC = () => {
     }
   };
 
-  // Missions assigned to this driver
+  // Missions assigned to this driver: active in transit OR delivered but waiting for payment collection
   const myMissions = orders.filter(
     o => (o.assignedDriverId === currentUser.id || !o.assignedDriverId) &&
-         (o.orderStatus === 'ready' || o.orderStatus === 'waiting_for_driver' || o.orderStatus === 'delivering')
+         (o.orderStatus === 'ready' || o.orderStatus === 'waiting_for_driver' || o.orderStatus === 'delivering' || (o.orderStatus === 'delivered' && o.paymentStatus === 'to_collect'))
   );
 
   const activeMission = orders.find(
-    o => o.assignedDriverId === currentUser.id && o.orderStatus === 'delivering'
+    o => o.assignedDriverId === currentUser.id && (o.orderStatus === 'delivering' || (o.orderStatus === 'delivered' && o.paymentStatus === 'to_collect'))
   ) || myMissions[0];
 
   const completedToday = orders.filter(
@@ -108,6 +109,12 @@ export const DriverDashboard: React.FC = () => {
 
   // Confirm Payment (Encaissement COD)
   const handleConfirmPayment = async (order: Order) => {
+    // Vérification stricte : la livraison doit être confirmée au préalable
+    if (order.orderStatus !== 'delivered') {
+      alert("L'encaissement par le livreur ne peut être validé que si la livraison est confirmée (statut Livrée).");
+      return;
+    }
+
     try {
       await collectPayment(order.id, order.totalAmount, {
         name: currentUser.name,
@@ -156,7 +163,7 @@ export const DriverDashboard: React.FC = () => {
       } catch (e) {
         console.error('GPS transmit error', e);
       }
-    }, 6000); // Intelligent interval of 6 seconds per spec
+    }, 10000); // Règle #12 (§35, §163) : Intervalle strict de 10 secondes pendant le statut delivering
   };
 
   const stopGpsTracking = () => {
@@ -387,6 +394,21 @@ export const DriverDashboard: React.FC = () => {
             </div>
           </div>
 
+          {/* Delivered Status Notice */}
+          {activeMission.orderStatus === 'delivered' && (
+            <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-2xl flex items-center gap-2.5 mb-6 text-emerald-900 text-xs font-semibold shadow-xs">
+              <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
+              <div>
+                <div className="font-bold text-emerald-800">Livraison confirmée avec succès ✓</div>
+                <div className="text-[11px] text-emerald-700 font-normal mt-0.5">
+                  {activeMission.paymentStatus === 'to_collect'
+                    ? 'La livraison est validée. Vous pouvez maintenant procéder à l\'encaissement en espèces ci-dessous.'
+                    : 'Commande réglée. La mission est complète !'}
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Workflow Action Buttons (Strict Status Pipeline) */}
           <div className="space-y-2">
             {activeMission.orderStatus !== 'delivering' && activeMission.orderStatus !== 'delivered' && (
@@ -410,13 +432,22 @@ export const DriverDashboard: React.FC = () => {
             )}
 
             {activeMission.paymentStatus === 'to_collect' && (
-              <button
-                onClick={() => handleConfirmPayment(activeMission)}
-                className="w-full bg-amber-600 hover:bg-amber-700 text-white font-bold py-3.5 px-4 rounded-xl text-xs flex items-center justify-center gap-2 shadow-md transition cursor-pointer"
-              >
-                <DollarSign className="w-4 h-4" />
-                <span>Confirmer encaissement ({activeMission.totalAmount.toFixed(2)} DT Cash)</span>
-              </button>
+              activeMission.orderStatus === 'delivered' ? (
+                <button
+                  onClick={() => handleConfirmPayment(activeMission)}
+                  className="w-full bg-amber-600 hover:bg-amber-700 text-white font-bold py-3.5 px-4 rounded-xl text-xs flex items-center justify-center gap-2 shadow-md transition cursor-pointer"
+                >
+                  <DollarSign className="w-4 h-4" />
+                  <span>Confirmer encaissement ({activeMission.totalAmount.toFixed(2)} DT Cash)</span>
+                </button>
+              ) : (
+                <div className="p-3.5 bg-stone-100 border border-stone-200 rounded-xl text-xs text-stone-600 flex items-center gap-2.5 font-medium">
+                  <Lock className="w-4 h-4 text-stone-500 shrink-0" />
+                  <span>
+                    Encaissement de <strong className="font-bold text-stone-800">{activeMission.totalAmount.toFixed(2)} DT</strong> verrouillé : confirmez d abord la livraison au client pour débloquer l encaissement.
+                  </span>
+                </div>
+              )
             )}
           </div>
         </div>
@@ -461,9 +492,20 @@ export const DriverDashboard: React.FC = () => {
                   <div className="font-mono font-bold text-stone-900">
                     {ord.totalAmount.toFixed(2)} DT
                   </div>
-                  <div className="text-[10px] font-semibold text-emerald-600">
-                    {ord.paymentStatus === 'paid' ? 'Encaissé' : 'À encaisser'}
-                  </div>
+                  {ord.paymentStatus === 'paid' ? (
+                    <div className="text-[10px] font-semibold text-emerald-600">
+                      ✓ Encaissé
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => handleConfirmPayment(ord)}
+                      className="mt-1 bg-amber-600 hover:bg-amber-700 text-white px-2.5 py-1 rounded-lg font-bold text-[10px] flex items-center gap-1 shadow-xs transition cursor-pointer"
+                      title="La livraison étant confirmée, vous pouvez encaisser le paiement"
+                    >
+                      <DollarSign className="w-3 h-3" />
+                      <span>Encaisser</span>
+                    </button>
+                  )}
                 </div>
               </div>
             ))}

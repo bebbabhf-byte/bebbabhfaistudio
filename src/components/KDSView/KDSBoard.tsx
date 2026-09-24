@@ -22,13 +22,14 @@ import {
   TrendingDown,
   BookOpen
 } from 'lucide-react';
+import { AIRecipesSection } from './AIRecipesSection';
 
 export const KDSBoard: React.FC = () => {
   const { currentUser } = useAuth();
   const [orders, setOrders] = useState<Order[]>([]);
   const [ingredients, setIngredients] = useState<Ingredient[]>([]);
   const [recipes, setRecipes] = useState<Recipe[]>([]);
-  const [activeTab, setActiveTab] = useState<'board' | 'stocks' | 'recipes'>('board');
+  const [activeTab, setActiveTab] = useState<'board' | 'stocks' | 'recipes' | 'ai_recipes'>('board');
   const [loading, setLoading] = useState(true);
 
   // Read-only stock filters
@@ -164,6 +165,21 @@ export const KDSBoard: React.FC = () => {
             >
               <BookOpen className="w-3.5 h-3.5" />
               <span>Fiches Recettes</span>
+            </button>
+
+            <button
+              onClick={() => setActiveTab('ai_recipes')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
+                activeTab === 'ai_recipes'
+                  ? 'bg-linear-to-r from-emerald-400 to-amber-400 text-stone-950 font-black shadow-md'
+                  : 'text-emerald-400 hover:text-emerald-300 hover:bg-stone-700/50'
+              }`}
+            >
+              <Sparkles className="w-3.5 h-3.5 text-amber-300" />
+              <span>Recette IA</span>
+              <span className="bg-emerald-950/60 text-emerald-300 text-[10px] px-1.5 py-0.2 rounded-full font-bold">
+                20 Menus
+              </span>
             </button>
           </div>
 
@@ -627,6 +643,13 @@ export const KDSBoard: React.FC = () => {
             </div>
           </div>
         </div>
+      )}
+
+      {/* ========================================== */}
+      {/* TAB 4: RECETTE IA (GÉNÉRATEUR 20 MENUS) */}
+      {/* ========================================== */}
+      {activeTab === 'ai_recipes' && (
+        <AIRecipesSection ingredients={ingredients} />
       )}
     </div>
   );
