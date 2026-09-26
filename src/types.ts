@@ -448,6 +448,13 @@ export interface AIMenuRecipe {
   calories: number;
   proteinGrams: number;
   image?: string;
+  visualDescription: string;
+  visualConsistency?: {
+    isVerified: boolean;
+    confidenceScore: number;
+    matchedIngredients: string[];
+    controlNotes: string;
+  };
   healthBenefits: string[];
   ingredientsUsed: {
     ingredientName: string;
@@ -457,4 +464,5 @@ export interface AIMenuRecipe {
   chefInstructions: string[];
   dietaryTags: string[];
 }
+
 

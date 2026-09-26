@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Order } from '../../types';
 import { fetchOrders } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
+import { useFavorites } from '../../context/FavoritesContext';
 import {
   Package,
   MapPin,
@@ -10,7 +11,8 @@ import {
   Bike,
   MessageSquareWarning,
   Navigation,
-  RefreshCw
+  RefreshCw,
+  Heart
 } from 'lucide-react';
 
 interface ClientOrdersViewProps {
@@ -23,6 +25,7 @@ export const ClientOrdersView: React.FC<ClientOrdersViewProps> = ({
   onOpenClaim
 }) => {
   const { currentUser } = useAuth();
+  const { isFavorite, toggleFavorite } = useFavorites();
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -151,8 +154,22 @@ export const ClientOrdersView: React.FC<ClientOrdersViewProps> = ({
                         )}
                       </div>
                     </div>
-                    <div className="font-mono font-bold text-stone-900">
-                      {it.itemTotal.toFixed(2)} DT
+                    <div className="flex items-center gap-3">
+                      <div className="font-mono font-bold text-stone-900">
+                        {it.itemTotal.toFixed(2)} DT
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => toggleFavorite(it.productId)}
+                        className={`p-1.5 rounded-lg border transition cursor-pointer ${
+                          isFavorite(it.productId)
+                            ? 'bg-rose-50 border-rose-200 text-rose-600'
+                            : 'bg-stone-50 border-stone-200 text-stone-400 hover:text-rose-500 hover:bg-rose-50 hover:border-rose-200'
+                        }`}
+                        title={isFavorite(it.productId) ? 'Dans vos favoris (cliquer pour retirer)' : 'Ajouter ce plat à vos favoris'}
+                      >
+                        <Heart className={`w-3.5 h-3.5 ${isFavorite(it.productId) ? 'fill-rose-500 text-rose-500' : ''}`} />
+                      </button>
                     </div>
                   </div>
                 ))}

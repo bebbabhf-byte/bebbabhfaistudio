@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useCart } from '../context/CartContext';
+import { useFavorites } from '../context/FavoritesContext';
 import { UserRole } from '../types';
 import { fetchStoreStatus } from '../services/api';
 import {
@@ -14,17 +15,28 @@ import {
   Flame,
   Layers,
   ChevronDown,
-  Clock
+  Clock,
+  Search,
+  X,
+  Heart
 } from 'lucide-react';
 
 interface NavbarProps {
   currentTab: string;
   setCurrentTab: (tab: string) => void;
+  searchQuery?: string;
+  setSearchQuery?: (query: string) => void;
 }
 
-export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab }) => {
+export const Navbar: React.FC<NavbarProps> = ({
+  currentTab,
+  setCurrentTab,
+  searchQuery = '',
+  setSearchQuery
+}) => {
   const { currentUser, currentRole, switchDemoRole } = useAuth();
   const { itemCount, setIsCartOpen } = useCart();
+  const { favoritesCount, showOnlyFavorites, setShowOnlyFavorites } = useFavorites();
   const [isRoleDropdownOpen, setIsRoleDropdownOpen] = React.useState(false);
   const [storeStatus, setStoreStatus] = useState<{
     isOpen: boolean;
@@ -165,12 +177,36 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab }) => 
             {currentRole === 'client' && (
               <>
                 <button
-                  onClick={() => setCurrentTab('menu')}
+                  onClick={() => {
+                    setShowOnlyFavorites(false);
+                    setCurrentTab('menu');
+                  }}
                   className={`px-3.5 py-2 rounded-lg text-sm font-medium transition ${
-                    currentTab === 'menu' ? 'bg-emerald-600 text-white shadow-xs' : 'text-stone-600 hover:text-stone-900 hover:bg-stone-100'
+                    currentTab === 'menu' && !showOnlyFavorites ? 'bg-emerald-600 text-white shadow-xs' : 'text-stone-600 hover:text-stone-900 hover:bg-stone-100'
                   }`}
                 >
                   Carte & Menus
+                </button>
+                <button
+                  onClick={() => {
+                    setShowOnlyFavorites(true);
+                    setCurrentTab('menu');
+                  }}
+                  className={`px-3.5 py-2 rounded-lg text-sm font-medium flex items-center gap-1.5 transition ${
+                    currentTab === 'menu' && showOnlyFavorites
+                      ? 'bg-rose-600 text-white shadow-xs font-bold'
+                      : 'text-stone-600 hover:text-rose-600 hover:bg-stone-100'
+                  }`}
+                >
+                  <Heart className={`w-4 h-4 ${currentTab === 'menu' && showOnlyFavorites ? 'fill-white text-white' : 'fill-rose-500/20 text-rose-500'}`} />
+                  <span>Favoris</span>
+                  {favoritesCount > 0 && (
+                    <span className={`text-[10px] font-bold px-1.5 py-0.2 rounded-full ${
+                      currentTab === 'menu' && showOnlyFavorites ? 'bg-white/25 text-white' : 'bg-rose-100 text-rose-700'
+                    }`}>
+                      {favoritesCount}
+                    </span>
+                  )}
                 </button>
                 <button
                   onClick={() => setCurrentTab('tracking')}
@@ -279,8 +315,58 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab }) => 
             )}
           </nav>
 
-          {/* Right Action: Cart + User indicator */}
+          {/* Right Action: Quick Search + Favorites + Cart + User indicator */}
           <div className="flex items-center gap-3">
+            {currentRole === 'client' && setSearchQuery && (
+              <div className="hidden lg:flex items-center relative">
+                <Search className="w-3.5 h-3.5 text-stone-400 absolute left-3 pointer-events-none" />
+                <input
+                  type="text"
+                  placeholder="Recherche rapide de plats..."
+                  value={searchQuery}
+                  onChange={(e) => {
+                    setSearchQuery(e.target.value);
+                    if (currentTab !== 'menu') setCurrentTab('menu');
+                  }}
+                  className="w-48 xl:w-60 pl-8 pr-7 py-1.5 text-xs bg-stone-100 hover:bg-stone-50 focus:bg-white border border-stone-200 focus:border-emerald-500 rounded-xl focus:outline-hidden transition-all shadow-inner focus:shadow-xs text-stone-900"
+                />
+                {searchQuery && (
+                  <button
+                    onClick={() => setSearchQuery('')}
+                    className="absolute right-2 text-stone-400 hover:text-stone-700 p-0.5 rounded-full hover:bg-stone-200 transition"
+                    title="Effacer la recherche"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                )}
+              </div>
+            )}
+
+            {currentRole === 'client' && (
+              <button
+                onClick={() => {
+                  setShowOnlyFavorites(true);
+                  setCurrentTab('menu');
+                }}
+                className={`relative p-2.5 rounded-xl flex items-center gap-2 font-medium text-sm transition border cursor-pointer ${
+                  currentTab === 'menu' && showOnlyFavorites
+                    ? 'bg-rose-600 text-white border-rose-600 shadow-sm'
+                    : 'bg-rose-50 hover:bg-rose-100 text-rose-800 border-rose-200'
+                }`}
+                title="Accéder directement à vos repas sains favoris"
+              >
+                <Heart className={`w-5 h-5 ${currentTab === 'menu' && showOnlyFavorites ? 'fill-white text-white' : 'text-rose-600 fill-rose-500/20'}`} />
+                <span className="hidden sm:inline font-semibold">Favoris</span>
+                {favoritesCount > 0 && (
+                  <span className={`text-xs font-bold w-5 h-5 rounded-full flex items-center justify-center ${
+                    currentTab === 'menu' && showOnlyFavorites ? 'bg-white text-rose-600' : 'bg-rose-600 text-white'
+                  }`}>
+                    {favoritesCount}
+                  </span>
+                )}
+              </button>
+            )}
+
             {currentRole === 'client' && (
               <button
                 onClick={() => setIsCartOpen(true)}
@@ -314,12 +400,27 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab }) => 
         {currentRole === 'client' && (
           <>
             <button
-              onClick={() => setCurrentTab('menu')}
+              onClick={() => {
+                setShowOnlyFavorites(false);
+                setCurrentTab('menu');
+              }}
               className={`px-3 py-1.5 rounded-md whitespace-nowrap font-medium ${
-                currentTab === 'menu' ? 'bg-emerald-600 text-white' : 'text-stone-600'
+                currentTab === 'menu' && !showOnlyFavorites ? 'bg-emerald-600 text-white' : 'text-stone-600'
               }`}
             >
               Carte
+            </button>
+            <button
+              onClick={() => {
+                setShowOnlyFavorites(true);
+                setCurrentTab('menu');
+              }}
+              className={`px-3 py-1.5 rounded-md whitespace-nowrap font-medium flex items-center gap-1 shrink-0 ${
+                currentTab === 'menu' && showOnlyFavorites ? 'bg-rose-600 text-white' : 'text-stone-600 hover:text-rose-600'
+              }`}
+            >
+              <Heart className={`w-3.5 h-3.5 ${currentTab === 'menu' && showOnlyFavorites ? 'fill-white text-white' : 'text-rose-500 fill-rose-500/20'}`} />
+              <span>Favoris ({favoritesCount})</span>
             </button>
             <button
               onClick={() => setCurrentTab('tracking')}
@@ -345,6 +446,29 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab }) => 
             >
               Réclamations
             </button>
+            {setSearchQuery && (
+              <div className="relative shrink-0 flex items-center ml-auto">
+                <Search className="w-3 h-3 text-stone-400 absolute left-2 pointer-events-none" />
+                <input
+                  type="text"
+                  placeholder="Recherche rapide..."
+                  value={searchQuery}
+                  onChange={(e) => {
+                    setSearchQuery(e.target.value);
+                    if (currentTab !== 'menu') setCurrentTab('menu');
+                  }}
+                  className="w-32 pl-6 pr-5 py-1 text-[11px] bg-white border border-stone-200 rounded-lg focus:outline-hidden focus:border-emerald-500"
+                />
+                {searchQuery && (
+                  <button
+                    onClick={() => setSearchQuery('')}
+                    className="absolute right-1 text-stone-400 p-0.5"
+                  >
+                    <X className="w-2.5 h-2.5" />
+                  </button>
+                )}
+              </div>
+            )}
           </>
         )}
 

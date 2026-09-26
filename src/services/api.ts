@@ -1276,4 +1276,64 @@ export async function generateAIRecipes(
   return res.json();
 }
 
+// Générateur d'image IA basé sur la description visuelle détaillée
+export async function generateDishImageFromPrompt(params: {
+  visualDescription: string;
+  dishTitle: string;
+  ingredients?: string[];
+  category?: string;
+}): Promise<{
+  success: boolean;
+  imageUrl: string;
+  visualConsistency: {
+    isVerified: boolean;
+    confidenceScore: number;
+    matchedIngredients: string[];
+    controlNotes: string;
+  };
+}> {
+  const res = await apiFetch(`${API_BASE}/ai/image/generate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params)
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Erreur génération d\'image' }));
+    throw new Error(err.error || 'Erreur génération d\'image');
+  }
+  return res.json();
+}
+
+// Ajout d'une ou plusieurs recettes à la carte des plats à commander
+export async function addRecipeToMenu(
+  recipes: AIMenuRecipe | AIMenuRecipe[],
+  force: boolean = false
+): Promise<{
+  success: boolean;
+  conflict?: boolean;
+  conflicts?: Array<{ recipeId: string; recipeName: string }>;
+  addedProducts?: Product[];
+  message?: string;
+}> {
+  const res = await apiFetch(`${API_BASE}/ai/recipes/add-to-menu`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      recipes: Array.isArray(recipes) ? recipes : [recipes],
+      force
+    })
+  });
+
+  const data = await res.json();
+  if (!res.ok) {
+    if (res.status === 409) {
+      return data;
+    }
+    throw new Error(data.error || data.message || 'Erreur lors de l\'ajout à la carte');
+  }
+  return data;
+}
+
+
+
 
