@@ -51,6 +51,11 @@ export const CartProvider: React.FC<{ children: React.ReactNode }> = ({ children
     selectedOptions: ProductOption[],
     specialInstructions?: string
   ) => {
+    // 2. Empêcher l'ajout au panier d'un produit marqué comme indisponible
+    if (product.isAvailable === false) {
+      return;
+    }
+
     const optionsDelta = selectedOptions.reduce((sum, opt) => sum + opt.priceDelta, 0);
     const unitPrice = product.basePrice;
     const itemTotal = parseFloat(((unitPrice + optionsDelta) * quantity).toFixed(2));

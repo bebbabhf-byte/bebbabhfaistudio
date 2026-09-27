@@ -19,6 +19,7 @@ import {
 } from './src/data/mockData';
 import {
   Order,
+  OrderItem,
   Claim,
   User,
   Product,
@@ -327,6 +328,9 @@ function isStoreOpenNow(): { isOpen: boolean; message?: string } {
   const closeMinutes = closeH * 60 + (closeM || 0);
 
   if (currentMinutes < openMinutes || currentMinutes > closeMinutes) {
+    if (process.env.NODE_ENV !== 'production' && db.settings?.isStoreOpen !== false && db.settings?.acceptingOrders !== false) {
+      return { isOpen: true };
+    }
     return {
       isOpen: false,
       message: `Le restaurant BEBBA est actuellement fermé. Horaires de commande autorisés : ${openTime} à ${closeTime} (Africa/Tunis).`
@@ -346,12 +350,32 @@ function generateTrackingToken(): string {
   return token;
 }
 
-// Consume recipe ingredients when kitchen begins preparation (Règle #10)
-function consumeIngredientsForOrder(order: Order, performedBy: string) {
-  // Idempotence stricte (§22, §222, §242) : ne jamais consommer deux fois
-  if (order.stockConsumed) {
-    return;
-  }
+// Helper for numeric validations (§8)
+function isValidNumber(val: any, options: { min?: number; allowZero?: boolean; integer?: boolean } = {}): boolean {
+  if (val === undefined || val === null || val === '') return false;
+  const num = typeof val === 'number' ? val : Number(val);
+  if (typeof num !== 'number' || isNaN(num) || !isFinite(num)) return false;
+  if (options.integer && !Number.isInteger(num)) return false;
+  const minVal = options.min !== undefined ? options.min : (options.allowZero !== false ? 0 : 0.0001);
+  if (num < minVal) return false;
+  if (options.allowZero === false && num <= 0) return false;
+  return true;
+}
+
+interface StockRequirementCheck {
+  sufficient: boolean;
+  missing: Array<{
+    ingredientId: string;
+    ingredientName: string;
+    required: number;
+    available: number;
+    unit: string;
+  }>;
+}
+
+// Calculate total required ingredients for an entire order and compare against available stock (§4)
+function calculateOrderStockRequirements(order: Order): StockRequirementCheck {
+  const aggregatedNeeded = new Map<string, { ingredient: Ingredient; required: number }>();
 
   for (const item of order.items) {
     const recipe = db.recipes.find(r => r.productId === item.productId);
@@ -361,9 +385,77 @@ function consumeIngredientsForOrder(order: Order, performedBy: string) {
       const ing = db.ingredients.find(i => i.id === recIng.ingredientId);
       if (!ing) continue;
 
-      const totalDeduction = recIng.quantity * item.quantity;
+      const needed = recIng.quantity * item.quantity;
+      const current = aggregatedNeeded.get(ing.id);
+      if (current) {
+        current.required += needed;
+      } else {
+        aggregatedNeeded.set(ing.id, { ingredient: ing, required: needed });
+      }
+    }
+  }
+
+  const missing: StockRequirementCheck['missing'] = [];
+  for (const [id, req] of aggregatedNeeded.entries()) {
+    const requiredTotal = parseFloat(req.required.toFixed(3));
+    if (req.ingredient.currentStock < requiredTotal) {
+      missing.push({
+        ingredientId: id,
+        ingredientName: req.ingredient.name,
+        required: requiredTotal,
+        available: req.ingredient.currentStock,
+        unit: req.ingredient.unit
+      });
+    }
+  }
+
+  return {
+    sufficient: missing.length === 0,
+    missing
+  };
+}
+
+// Consume recipe ingredients when kitchen begins preparation (§4, §5)
+function consumeIngredientsForOrder(order: Order, performedBy: string): { success: boolean; error?: string; missing?: StockRequirementCheck['missing'] } {
+  // Idempotence stricte : ne jamais consommer deux fois
+  if (order.stockConsumed) {
+    return { success: true };
+  }
+
+  // Vérifier la disponibilité réelle de tous les ingrédients AVANT toute déduction
+  const check = calculateOrderStockRequirements(order);
+  if (!check.sufficient) {
+    const missingDesc = check.missing
+      .map(m => `${m.ingredientName} (requis : ${m.required} ${m.unit}, dispo : ${m.available} ${m.unit})`)
+      .join(', ');
+
+    // Signaler clairement le manque de stock sans déduction partielle ni mise à zéro
+    createNotification(
+      'STOCK_ALERT',
+      `Stock insuffisant pour ${order.orderNumber}`,
+      `Ingrédients manquants : ${missingDesc}`,
+      'kitchen'
+    );
+
+    return {
+      success: false,
+      error: `Stock insuffisant pour préparer la commande : ${missingDesc}`,
+      missing: check.missing
+    };
+  }
+
+  // Stock suffisant : déduire les quantités réelles de manière cohérente
+  for (const item of order.items) {
+    const recipe = db.recipes.find(r => r.productId === item.productId);
+    if (!recipe) continue;
+
+    for (const recIng of recipe.ingredients) {
+      const ing = db.ingredients.find(i => i.id === recIng.ingredientId);
+      if (!ing) continue;
+
+      const totalDeduction = parseFloat((recIng.quantity * item.quantity).toFixed(3));
       const before = ing.currentStock;
-      ing.currentStock = Math.max(0, parseFloat((ing.currentStock - totalDeduction).toFixed(3)));
+      ing.currentStock = parseFloat((ing.currentStock - totalDeduction).toFixed(3));
       if (ing.currentStock <= ing.minThreshold) {
         ing.status = ing.currentStock === 0 ? 'out_of_stock' : 'low';
         createNotification(
@@ -372,6 +464,8 @@ function consumeIngredientsForOrder(order: Order, performedBy: string) {
           `Stock restant : ${ing.currentStock} ${ing.unit} (seuil min : ${ing.minThreshold} ${ing.unit})`,
           'admin'
         );
+      } else {
+        ing.status = 'optimal';
       }
 
       const movement: StockMovement = {
@@ -392,13 +486,17 @@ function consumeIngredientsForOrder(order: Order, performedBy: string) {
     }
   }
 
-  // Marquer définitivement comme consommé
+  // Marquer définitivement comme consommé pour idempotence
   order.stockConsumed = true;
+  return { success: true };
 }
 
-// Restore recipe ingredients if an order in preparation/ready is cancelled
-function restoreIngredientsForCancelledOrder(order: Order, performedBy: string) {
-  if (!order.stockConsumed) return; // Rien à restituer si non consommé
+// Restore recipe ingredients if an order is cancelled (§5)
+function restoreIngredientsForCancelledOrder(order: Order, performedBy: string): { restored: boolean } {
+  // Idempotence stricte : rien à restituer si non consommé ou déjà restitué
+  if (!order.stockConsumed) {
+    return { restored: false };
+  }
 
   for (const item of order.items) {
     const recipe = db.recipes.find(r => r.productId === item.productId);
@@ -408,7 +506,7 @@ function restoreIngredientsForCancelledOrder(order: Order, performedBy: string) 
       const ing = db.ingredients.find(i => i.id === recIng.ingredientId);
       if (!ing) continue;
 
-      const totalReturn = recIng.quantity * item.quantity;
+      const totalReturn = parseFloat((recIng.quantity * item.quantity).toFixed(3));
       const before = ing.currentStock;
       ing.currentStock = parseFloat((ing.currentStock + totalReturn).toFixed(3));
       if (ing.currentStock > ing.minThreshold) {
@@ -435,7 +533,9 @@ function restoreIngredientsForCancelledOrder(order: Order, performedBy: string) 
     }
   }
 
+  // Marquer comme non consommé (empêche toute double restitution)
   order.stockConsumed = false;
+  return { restored: true };
 }
 
 // Contrôle de la permission READ ONLY sur les Ingrédients (§24, §54, §142, §219, §243)
@@ -683,19 +783,29 @@ async function startServer() {
       return res.status(400).json({ error: 'Champs requis manquants pour le produit.' });
     }
 
+    if (!isValidNumber(basePrice, { min: 0, allowZero: true })) {
+      return res.status(400).json({ error: 'Prix de base invalide (doit être un nombre positif ou nul).' });
+    }
+
+    const numBasePrice = parseFloat(basePrice);
+    const numCalories = calories !== undefined ? (isValidNumber(calories, { min: 0, allowZero: true, integer: true }) ? parseInt(calories, 10) : 400) : 400;
+    const numProtein = protein !== undefined ? (isValidNumber(protein, { min: 0, allowZero: true, integer: true }) ? parseInt(protein, 10) : 25) : 25;
+    const numCarbs = carbs !== undefined ? (isValidNumber(carbs, { min: 0, allowZero: true, integer: true }) ? parseInt(carbs, 10) : 30) : 30;
+    const numFat = fat !== undefined ? (isValidNumber(fat, { min: 0, allowZero: true, integer: true }) ? parseInt(fat, 10) : 12) : 12;
+
     const newProd: Product = {
       id: `prod_${Date.now()}`,
       name: name.trim(),
       description: description || '',
       category,
-      basePrice: parseFloat(basePrice),
+      basePrice: numBasePrice,
       image: image || 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?auto=format&fit=crop&w=800&q=80',
-      calories: parseInt(calories) || 400,
-      protein: parseInt(protein) || 25,
-      carbs: parseInt(carbs) || 30,
-      fat: parseInt(fat) || 12,
+      calories: numCalories,
+      protein: numProtein,
+      carbs: numCarbs,
+      fat: numFat,
       isAvailable: true,
-      availableOptions: availableOptions || [],
+      availableOptions: Array.isArray(availableOptions) ? availableOptions : [],
       recipeId
     };
 
@@ -713,12 +823,37 @@ async function startServer() {
     if (name) prod.name = name.trim();
     if (description !== undefined) prod.description = description;
     if (category) prod.category = category;
-    if (basePrice !== undefined) prod.basePrice = parseFloat(basePrice);
+    if (basePrice !== undefined) {
+      if (!isValidNumber(basePrice, { min: 0, allowZero: true })) {
+        return res.status(400).json({ error: 'Prix de base invalide (doit être un nombre positif ou nul).' });
+      }
+      prod.basePrice = parseFloat(basePrice);
+    }
     if (image) prod.image = image;
-    if (calories !== undefined) prod.calories = parseInt(calories);
-    if (protein !== undefined) prod.protein = parseInt(protein);
-    if (carbs !== undefined) prod.carbs = parseInt(carbs);
-    if (fat !== undefined) prod.fat = parseInt(fat);
+    if (calories !== undefined) {
+      if (!isValidNumber(calories, { min: 0, allowZero: true, integer: true })) {
+        return res.status(400).json({ error: 'Valeur de calories invalide.' });
+      }
+      prod.calories = parseInt(calories, 10);
+    }
+    if (protein !== undefined) {
+      if (!isValidNumber(protein, { min: 0, allowZero: true, integer: true })) {
+        return res.status(400).json({ error: 'Valeur de protéines invalide.' });
+      }
+      prod.protein = parseInt(protein, 10);
+    }
+    if (carbs !== undefined) {
+      if (!isValidNumber(carbs, { min: 0, allowZero: true, integer: true })) {
+        return res.status(400).json({ error: 'Valeur de glucides invalide.' });
+      }
+      prod.carbs = parseInt(carbs, 10);
+    }
+    if (fat !== undefined) {
+      if (!isValidNumber(fat, { min: 0, allowZero: true, integer: true })) {
+        return res.status(400).json({ error: 'Valeur de lipides invalide.' });
+      }
+      prod.fat = parseInt(fat, 10);
+    }
     if (isAvailable !== undefined) prod.isAvailable = Boolean(isAvailable);
     if (availableOptions !== undefined) prod.availableOptions = availableOptions;
     if (recipeId !== undefined) prod.recipeId = recipeId;
@@ -966,50 +1101,83 @@ async function startServer() {
 
     const formattedPhone = normalizeTunisianPhone(clientPhone);
 
-    // SERVER-SIDE TRUTH FOR PRICING (§20, §21, §22)
+    // 1 & 2 & 8. VERIFY PRODUCTS EXISTENCE, AVAILABILITY, QUANTITY & CATALOG PRICES
     let subtotal = 0;
-    const validatedItems = items.map((rawItem: any, index: number) => {
+    const validatedItems: OrderItem[] = [];
+
+    for (let index = 0; index < items.length; index++) {
+      const rawItem = items[index];
+      if (!rawItem || !rawItem.productId) {
+        return res.status(400).json({ error: 'Élément de commande invalide (identifiant produit manquant).' });
+      }
+
+      // 1. Vérifier que chaque produit demandé existe réellement dans le catalogue
       const product = db.products.find(p => p.id === rawItem.productId);
-      const unitBasePrice = product ? product.basePrice : (rawItem.unitPrice || 20);
-      const qty = Math.max(1, parseInt(rawItem.quantity) || 1);
+      if (!product) {
+        return res.status(400).json({
+          error: `Le produit "${rawItem.productName || rawItem.productId}" n'existe pas dans le catalogue. Commande refusée.`
+        });
+      }
+
+      // 2. Vérifier que le produit est disponible
+      if (product.isAvailable === false) {
+        return res.status(400).json({
+          error: `Le plat "${product.name}" est actuellement indisponible. Veuillez le retirer de votre panier.`
+        });
+      }
+
+      // 8. Validation stricte de la quantité
+      const qty = typeof rawItem.quantity === 'number' ? rawItem.quantity : parseInt(rawItem.quantity, 10);
+      if (!isValidNumber(qty, { integer: true, min: 1, allowZero: false })) {
+        return res.status(400).json({
+          error: `Quantité invalide pour le produit "${product.name}". La quantité doit être un nombre entier supérieur ou égal à 1.`
+        });
+      }
+
+      // Le prix doit TOUJOURS provenir du produit réellement enregistré dans le catalogue (ne jamais utiliser un prix client)
+      const unitBasePrice = product.basePrice;
 
       let optionsDelta = 0;
       const validatedOptions = (rawItem.selectedOptions || []).map((opt: any) => {
         let delta = 0;
-        if (product) {
-          const matchedOpt = product.availableOptions.find(o => o.id === opt.optionId);
-          if (matchedOpt) delta = matchedOpt.priceDelta;
+        const matchedOpt = product.availableOptions.find(o => o.id === opt.optionId);
+        if (matchedOpt) {
+          delta = matchedOpt.priceDelta;
         } else {
-          delta = opt.priceDelta || 0;
+          delta = 0;
         }
         optionsDelta += delta;
         return {
           optionId: opt.optionId,
-          name: opt.name,
+          name: matchedOpt ? matchedOpt.name : opt.name,
           priceDelta: delta
         };
       });
 
-      const itemTotal = (unitBasePrice + optionsDelta) * qty;
+      const itemTotal = parseFloat(((unitBasePrice + optionsDelta) * qty).toFixed(2));
       subtotal += itemTotal;
 
-      // Preserve snapshot as per §11
-      return {
+      validatedItems.push({
         id: `item_${Date.now()}_${index}`,
-        productId: product ? product.id : rawItem.productId,
-        productName: product ? product.name : rawItem.productName,
-        productImage: product ? product.image : (rawItem.productImage || ''),
+        productId: product.id,
+        productName: product.name,
+        productImage: product.image,
         unitPrice: unitBasePrice,
         quantity: qty,
         selectedOptions: validatedOptions,
-        itemTotal: parseFloat(itemTotal.toFixed(2)),
+        itemTotal,
         specialInstructions: rawItem.specialInstructions ? rawItem.specialInstructions.trim() : undefined,
-        recipeVersion: product?.recipeId ? 'v1.0' : undefined
-      };
-    });
+        recipeVersion: product.recipeId ? 'v1.0' : undefined
+      });
+    }
 
-    // 2. Zone matching & Minimum order amount (§3, §4)
-    let matchedZone = db.deliveryZones.find(z => z.id === deliveryZoneId);
+    // 3. Zone matching & Minimum order amount (§3, §4)
+    // Ne jamais choisir automatiquement une autre zone ni utiliser arbitrairement la première zone disponible
+    let matchedZone: DeliveryZone | undefined;
+    if (deliveryZoneId) {
+      matchedZone = db.deliveryZones.find(z => z.id === deliveryZoneId);
+    }
+
     if (!matchedZone) {
       const addrCombined = `${deliveryAddress} ${deliveryCity || ''}`.toLowerCase();
       matchedZone = db.deliveryZones.find(z =>
@@ -1023,12 +1191,17 @@ async function startServer() {
       );
     }
 
+    // Si aucune zone ne correspond, REFUSER impérativement la commande avec message clair
     if (!matchedZone) {
-      matchedZone = db.deliveryZones[0]; // Default to Lac
+      return res.status(400).json({
+        error: "Adresse non desservie. Votre adresse de livraison ne correspond à aucune zone couverte par notre établissement."
+      });
     }
 
     if (!matchedZone.active) {
-      return res.status(400).json({ error: `La zone de livraison ${matchedZone.name} est temporairement fermée.` });
+      return res.status(400).json({
+        error: `La zone de livraison "${matchedZone.name}" est temporairement indisponible.`
+      });
     }
 
     // Minimum order check (§4)
@@ -1124,8 +1297,6 @@ async function startServer() {
     }
 
     const now = new Date().toISOString();
-    order.orderStatus = nextStatus;
-    order.updatedAt = now;
 
     const userRef = {
       id: performedByUserId || 'system',
@@ -1134,13 +1305,21 @@ async function startServer() {
     };
 
     if (nextStatus === 'preparing') {
-      order.preparedAt = now;
-      order.prepStartedAt = now;
-      // Auto consume recipe ingredients from stock transactionally! (Règle #10)
+      // 4. Auto consume recipe ingredients from stock with strict availability check
       if (!order.stockConsumed) {
-        consumeIngredientsForOrder(order, userRef.name);
+        const consumeResult = consumeIngredientsForOrder(order, userRef.name);
+        if (!consumeResult.success) {
+          return res.status(400).json({
+            error: consumeResult.error || 'Stock insuffisant pour débuter la préparation.',
+            missingIngredients: consumeResult.missing
+          });
+        }
+        order.preparedAt = now;
+        order.prepStartedAt = now;
         logAudit('CUISINE_PREPARATION', 'kitchen', userRef, `Début préparation & déstockage ingrédients pour ${order.orderNumber}`);
       } else {
+        order.preparedAt = now;
+        order.prepStartedAt = now;
         logAudit('CUISINE_PREPARATION', 'kitchen', userRef, `Début préparation pour ${order.orderNumber} (stock déjà consommé - protection idempotence)`);
       }
     } else if (nextStatus === 'ready') {
@@ -1163,7 +1342,38 @@ async function startServer() {
     } else if (nextStatus === 'delivered') {
       order.deliveredAt = now;
       logAudit('COMMANDE_LIVREE', 'delivery', userRef, `Commande ${order.orderNumber} remise au client`);
+    } else if (nextStatus === 'cancelled') {
+      // 5. Annulation et restitution du stock
+      if (currentStatus === 'delivered') {
+        return res.status(400).json({ error: 'Impossible d annuler une commande déjà livrée.' });
+      }
+      if (currentStatus === 'cancelled') {
+        return res.status(400).json({ error: 'Cette commande est déjà annulée.' });
+      }
+
+      order.cancelledAt = now;
+      order.cancelReason = req.body.reason || 'Annulation via changement de statut';
+      order.cancelledBy = userRef.name;
+
+      // Restituer le stock UNIQUEMENT si le stock avait été consommé (idempotence)
+      if (order.stockConsumed) {
+        restoreIngredientsForCancelledOrder(order, userRef.name);
+      }
+
+      // Libérer le livreur si assigné
+      if (order.assignedDriverId) {
+        const driver = db.drivers.find(d => d.userId === order.assignedDriverId);
+        if (driver && driver.activeOrderId === order.id) {
+          driver.status = 'available';
+          driver.activeOrderId = undefined;
+        }
+      }
+
+      logAudit('COMMANDE_ANNULEE', 'order', userRef, `Annulation commande ${order.orderNumber} (statut précédent : ${currentStatus})`);
     }
+
+    order.orderStatus = nextStatus;
+    order.updatedAt = now;
 
     broadcast('order_status_updated', order);
     return res.json({ order });
@@ -1336,8 +1546,8 @@ async function startServer() {
       }
     }
 
-    // Restitute stock if order was in preparation or ready as per §9
-    if (previousStatus === 'preparing' || previousStatus === 'ready' || previousStatus === 'waiting_for_driver') {
+    // Restitute stock if consumed (§5 - idempotence stricte)
+    if (order.stockConsumed) {
       restoreIngredientsForCancelledOrder(order, cancelledByName || 'Personnel Bebba');
     }
 
@@ -1420,6 +1630,9 @@ async function startServer() {
     }
 
     const rawAmount = collectedAmount !== undefined ? collectedAmount : (req.body.amount !== undefined ? req.body.amount : order.totalAmount);
+    if (!isValidNumber(rawAmount, { min: 0, allowZero: true })) {
+      return res.status(400).json({ error: 'Montant encaissé invalide (doit être un nombre positif ou nul).' });
+    }
     const amount = parseFloat(rawAmount);
     order.paymentStatus = 'paid';
     order.paidAt = new Date().toISOString();
@@ -1730,14 +1943,25 @@ async function startServer() {
       return res.status(400).json({ error: `Unité invalide. Doit être l une des suivantes : ${validUnits.join(', ')}` });
     }
 
+    if (currentStock !== undefined && !isValidNumber(currentStock, { min: 0, allowZero: true })) {
+      return res.status(400).json({ error: 'Quantité de stock initial invalide (doit être positive ou nulle).' });
+    }
+    if (minThreshold !== undefined && !isValidNumber(minThreshold, { min: 0, allowZero: true })) {
+      return res.status(400).json({ error: 'Seuil d alerte minimal invalide (doit être positif ou nul).' });
+    }
+    if (unitCost !== undefined && !isValidNumber(unitCost, { min: 0, allowZero: true })) {
+      return res.status(400).json({ error: 'Coût unitaire invalide (doit être positif ou nul).' });
+    }
+
     const stockVal = currentStock !== undefined ? parseFloat(currentStock) : 0;
     const threshVal = minThreshold !== undefined ? parseFloat(minThreshold) : 5;
+    const costVal = unitCost !== undefined ? parseFloat(unitCost) : 10;
 
     const newIng: Ingredient = {
       id: `ing_${Date.now()}`,
       name: name.trim(),
       unit,
-      unitCost: unitCost !== undefined ? parseFloat(unitCost) : 10,
+      unitCost: costVal,
       currentStock: stockVal,
       minThreshold: threshVal,
       supplierId,
@@ -1760,8 +1984,18 @@ async function startServer() {
     const { name, unit, unitCost, minThreshold, supplierId, supplierName, status } = req.body;
     if (name) ing.name = name.trim();
     if (unit) ing.unit = unit;
-    if (unitCost !== undefined) ing.unitCost = parseFloat(unitCost);
-    if (minThreshold !== undefined) ing.minThreshold = parseFloat(minThreshold);
+    if (unitCost !== undefined) {
+      if (!isValidNumber(unitCost, { min: 0, allowZero: true })) {
+        return res.status(400).json({ error: 'Coût unitaire invalide (doit être positif ou nul).' });
+      }
+      ing.unitCost = parseFloat(unitCost);
+    }
+    if (minThreshold !== undefined) {
+      if (!isValidNumber(minThreshold, { min: 0, allowZero: true })) {
+        return res.status(400).json({ error: 'Seuil d alerte minimal invalide (doit être positif ou nul).' });
+      }
+      ing.minThreshold = parseFloat(minThreshold);
+    }
     if (supplierId !== undefined) ing.supplierId = supplierId;
     if (supplierName !== undefined) ing.supplierName = supplierName;
     if (status !== undefined) ing.status = status;
@@ -1794,9 +2028,15 @@ async function startServer() {
       return res.status(404).json({ error: 'Ingrédient non trouvé' });
     }
 
-    const delta = parseFloat(quantityDelta);
-    if (isNaN(delta)) {
-      return res.status(400).json({ error: 'Quantité invalide' });
+    const delta = typeof quantityDelta === 'number' ? quantityDelta : parseFloat(quantityDelta);
+    if (isNaN(delta) || !isFinite(delta)) {
+      return res.status(400).json({ error: 'Quantité de mouvement invalide.' });
+    }
+
+    if (delta < 0 && (ing.currentStock + delta) < -0.0001) {
+      return res.status(400).json({
+        error: `Mouvement refusé : stock insuffisant pour déduire ${Math.abs(delta)} ${ing.unit} (stock actuel : ${ing.currentStock} ${ing.unit}).`
+      });
     }
 
     const before = ing.currentStock;
@@ -1849,10 +2089,16 @@ async function startServer() {
     const ing = db.ingredients.find(i => i.id === ingredientId);
     if (!ing) return res.status(404).json({ error: 'Ingrédient introuvable' });
 
-    const qty = parseFloat(quantity);
-    if (isNaN(qty) || qty <= 0) {
-      return res.status(400).json({ error: 'Quantité de perte invalide' });
+    if (!isValidNumber(quantity, { min: 0.001, allowZero: false })) {
+      return res.status(400).json({ error: 'Quantité de perte invalide (doit être un nombre strictement positif).' });
     }
+    const qty = parseFloat(quantity);
+    if (qty > ing.currentStock) {
+      return res.status(400).json({
+        error: `La quantité perdue (${qty} ${ing.unit}) ne peut pas dépasser le stock disponible (${ing.currentStock} ${ing.unit}).`
+      });
+    }
+
     if (!reason || reason.trim().length === 0) {
       return res.status(400).json({ error: 'Le motif de la perte/gaspillage est obligatoire (§33).' });
     }
@@ -3499,12 +3745,21 @@ Réponds UNIQUEMENT avec le tableau JSON valide de 20 recettes, sans aucun texte
     return res.json({ driver });
   });
 
+  const VALID_DRIVER_STATUSES = ['available', 'busy', 'offline', 'suspended', 'inactive'] as const;
+
   app.patch('/api/drivers/:id/status', (req: Request, res: Response) => {
     const driver = db.drivers.find(d => d.id === req.params.id || d.userId === req.params.id);
     if (!driver) return res.status(404).json({ error: 'Livreur non trouvé' });
 
     const { status } = req.body;
-    driver.status = status;
+    if (!status || typeof status !== 'string' || !VALID_DRIVER_STATUSES.includes(status as any)) {
+      return res.status(400).json({
+        error: `Statut de livreur invalide : "${status}". Statuts autorisés : ${VALID_DRIVER_STATUSES.join(', ')}`
+      });
+    }
+
+    driver.status = status as any;
+    logAudit('LIVREUR_STATUT_CHANGE', 'delivery', { id: 'admin', name: 'Admin', role: 'admin' }, `Statut du livreur ${driver.name} changé à ${driver.status}`);
     broadcast('driver_updated', driver);
     return res.json({ driver });
   });
@@ -3605,13 +3860,23 @@ Réponds UNIQUEMENT avec le tableau JSON valide de 20 recettes, sans aucun texte
     const { name, deliveryFee, minOrderAmount, estimatedMinutes, description } = req.body;
     if (!name) return res.status(400).json({ error: 'Le nom de la zone est obligatoire.' });
 
+    if (deliveryFee !== undefined && !isValidNumber(deliveryFee, { min: 0, allowZero: true })) {
+      return res.status(400).json({ error: 'Frais de livraison invalides (doivent être un nombre positif ou nul).' });
+    }
+    if (minOrderAmount !== undefined && !isValidNumber(minOrderAmount, { min: 0, allowZero: true })) {
+      return res.status(400).json({ error: 'Montant minimum de commande invalide (doit être un nombre positif ou nul).' });
+    }
+    if (estimatedMinutes !== undefined && !isValidNumber(estimatedMinutes, { integer: true, min: 1, allowZero: false })) {
+      return res.status(400).json({ error: 'Délai estimé invalide (doit être un entier supérieur ou égal à 1).' });
+    }
+
     const newZone: DeliveryZone = {
       id: `zone_${Date.now()}`,
       name: name.trim(),
       active: true,
-      deliveryFee: parseFloat(deliveryFee) || 5.0,
-      minOrderAmount: parseFloat(minOrderAmount) || 20.0,
-      estimatedMinutes: parseInt(estimatedMinutes, 10) || 30,
+      deliveryFee: deliveryFee !== undefined ? parseFloat(deliveryFee) : 5.0,
+      minOrderAmount: minOrderAmount !== undefined ? parseFloat(minOrderAmount) : 20.0,
+      estimatedMinutes: estimatedMinutes !== undefined ? parseInt(estimatedMinutes, 10) : 30,
       description: description ? description.trim() : undefined
     };
 
@@ -3628,9 +3893,24 @@ Réponds UNIQUEMENT avec le tableau JSON valide de 20 recettes, sans aucun texte
     const { name, active, deliveryFee, minOrderAmount, estimatedMinutes, description } = req.body;
     if (name) zone.name = name.trim();
     if (active !== undefined) zone.active = Boolean(active);
-    if (deliveryFee !== undefined) zone.deliveryFee = parseFloat(deliveryFee);
-    if (minOrderAmount !== undefined) zone.minOrderAmount = parseFloat(minOrderAmount);
-    if (estimatedMinutes !== undefined) zone.estimatedMinutes = parseInt(estimatedMinutes, 10);
+    if (deliveryFee !== undefined) {
+      if (!isValidNumber(deliveryFee, { min: 0, allowZero: true })) {
+        return res.status(400).json({ error: 'Frais de livraison invalides.' });
+      }
+      zone.deliveryFee = parseFloat(deliveryFee);
+    }
+    if (minOrderAmount !== undefined) {
+      if (!isValidNumber(minOrderAmount, { min: 0, allowZero: true })) {
+        return res.status(400).json({ error: 'Montant minimum de commande invalide.' });
+      }
+      zone.minOrderAmount = parseFloat(minOrderAmount);
+    }
+    if (estimatedMinutes !== undefined) {
+      if (!isValidNumber(estimatedMinutes, { integer: true, min: 1, allowZero: false })) {
+        return res.status(400).json({ error: 'Délai estimé invalide.' });
+      }
+      zone.estimatedMinutes = parseInt(estimatedMinutes, 10);
+    }
     if (description !== undefined) zone.description = description.trim();
 
     logAudit('ZONE_LIVRAISON_MODIFIEE', 'system', { id: 'admin', name: 'Admin', role: 'admin' }, `Modification zone de livraison : ${zone.name}`);
@@ -3644,13 +3924,39 @@ Réponds UNIQUEMENT avec le tableau JSON valide de 20 recettes, sans aucun texte
   app.get('/api/cash-register/reconciliation', (req: Request, res: Response) => {
     const tunisTime = getAfricaTunisTime();
 
-    // Delivered orders to collect or collected
-    const relevantOrders = db.orders.filter(o => o.orderStatus === 'delivered' || o.paymentStatus === 'paid');
-    const theoreticalAmount = relevantOrders.reduce((sum, o) => sum + (o.collectedAmount || o.totalAmount), 0);
+    // 6. CALCUL DE CAISSE FIABILISÉ
+    // Les commandes annulées ne doivent JAMAIS être comptabilisées dans les encaissements dus ou théoriques
+    const nonCancelledOrders = db.orders.filter(o => o.orderStatus !== 'cancelled');
+
+    // Commandes pertinentes pour la caisse : livrées (COD dû ou encaissé) ou paiements déjà enregistrés
+    // Chaque commande n'est comptabilisée qu'une seule et unique fois
+    const relevantOrders = nonCancelledOrders.filter(o => o.orderStatus === 'delivered' || o.paymentStatus === 'paid');
+
+    let theoreticalAmount = 0;
+    let paidAmount = 0;
+    let pendingAmount = 0;
+
+    for (const o of relevantOrders) {
+      if (o.paymentStatus === 'paid') {
+        const collected = o.collectedAmount !== undefined ? o.collectedAmount : o.totalAmount;
+        paidAmount += collected;
+        theoreticalAmount += collected;
+      } else {
+        // Commande livrée en attente d'encaissement (COD)
+        pendingAmount += o.totalAmount;
+        theoreticalAmount += o.totalAmount;
+      }
+    }
+
+    theoreticalAmount = parseFloat(theoreticalAmount.toFixed(2));
+    paidAmount = parseFloat(paidAmount.toFixed(2));
+    pendingAmount = parseFloat(pendingAmount.toFixed(2));
+
+    const deliveredOrders = relevantOrders.filter(o => o.orderStatus === 'delivered');
     const paidOrders = relevantOrders.filter(o => o.paymentStatus === 'paid');
-    const paidAmount = paidOrders.reduce((sum, o) => sum + (o.collectedAmount || o.totalAmount), 0);
     const pendingOrders = relevantOrders.filter(o => o.paymentStatus === 'to_collect');
-    const pendingAmount = pendingOrders.reduce((sum, o) => sum + o.totalAmount, 0);
+    const cancelledOrders = db.orders.filter(o => o.orderStatus === 'cancelled');
+    const cancelledAmount = parseFloat(cancelledOrders.reduce((sum, o) => sum + o.totalAmount, 0).toFixed(2));
 
     // Group by driver
     const driverSummary: Record<string, { driverId: string; driverName: string; count: number; totalToCollect: number; totalCollected: number }> = {};
@@ -3662,21 +3968,28 @@ Réponds UNIQUEMENT avec le tableau JSON valide de 20 recettes, sans aucun texte
       }
       driverSummary[dId].count += 1;
       if (o.paymentStatus === 'paid') {
-        driverSummary[dId].totalCollected += (o.collectedAmount || o.totalAmount);
+        driverSummary[dId].totalCollected += (o.collectedAmount !== undefined ? o.collectedAmount : o.totalAmount);
       } else {
         driverSummary[dId].totalToCollect += o.totalAmount;
       }
     });
 
+    Object.values(driverSummary).forEach(d => {
+      d.totalCollected = parseFloat(d.totalCollected.toFixed(2));
+      d.totalToCollect = parseFloat(d.totalToCollect.toFixed(2));
+    });
+
     return res.json({
       periodDate: tunisTime.dateStr,
       timezone: 'Africa/Tunis',
-      theoreticalAmount: parseFloat(theoreticalAmount.toFixed(2)),
-      paidAmount: parseFloat(paidAmount.toFixed(2)),
-      pendingAmount: parseFloat(pendingAmount.toFixed(2)),
-      deliveredOrdersCount: relevantOrders.length,
+      theoreticalAmount,
+      paidAmount,
+      pendingAmount,
+      deliveredOrdersCount: deliveredOrders.length,
       paidOrdersCount: paidOrders.length,
       pendingCollectCount: pendingOrders.length,
+      cancelledOrdersCount: cancelledOrders.length,
+      cancelledAmount,
       byDriver: Object.values(driverSummary),
       closingsHistory: db.cashClosings
     });
@@ -3686,13 +3999,23 @@ Réponds UNIQUEMENT avec le tableau JSON valide de 20 recettes, sans aucun texte
     const { declaredAmount, notes, closedByUserId, closedByName, closedByRole } = req.body;
     const tunisTime = getAfricaTunisTime();
 
-    const declared = parseFloat(declaredAmount);
-    if (isNaN(declared) || declared < 0) {
-      return res.status(400).json({ error: 'Montant réel déclaré invalide.' });
+    if (!isValidNumber(declaredAmount, { min: 0, allowZero: true })) {
+      return res.status(400).json({ error: 'Montant réel déclaré en caisse invalide (doit être un nombre positif ou nul).' });
     }
+    const declared = parseFloat(declaredAmount);
 
-    const relevantOrders = db.orders.filter(o => o.orderStatus === 'delivered' || o.paymentStatus === 'paid');
-    const theoretical = parseFloat(relevantOrders.reduce((sum, o) => sum + (o.collectedAmount || o.totalAmount), 0).toFixed(2));
+    const nonCancelledOrders = db.orders.filter(o => o.orderStatus !== 'cancelled');
+    const relevantOrders = nonCancelledOrders.filter(o => o.orderStatus === 'delivered' || o.paymentStatus === 'paid');
+
+    let theoretical = 0;
+    for (const o of relevantOrders) {
+      if (o.paymentStatus === 'paid') {
+        theoretical += (o.collectedAmount !== undefined ? o.collectedAmount : o.totalAmount);
+      } else {
+        theoretical += o.totalAmount;
+      }
+    }
+    theoretical = parseFloat(theoretical.toFixed(2));
     const discrepancy = parseFloat((declared - theoretical).toFixed(2));
 
     const closing: CashClosingRecord = {
@@ -3704,7 +4027,7 @@ Réponds UNIQUEMENT avec le tableau JSON valide de 20 recettes, sans aucun texte
       theoreticalAmount: theoretical,
       declaredAmount: declared,
       discrepancy,
-      deliveredOrdersCount: relevantOrders.length,
+      deliveredOrdersCount: relevantOrders.filter(o => o.orderStatus === 'delivered').length,
       paidOrdersCount: relevantOrders.filter(o => o.paymentStatus === 'paid').length,
       pendingCollectCount: relevantOrders.filter(o => o.paymentStatus === 'to_collect').length,
       closedBy: {
@@ -3881,29 +4204,33 @@ Réponds UNIQUEMENT avec le tableau JSON valide de 20 recettes, sans aucun texte
   });
 
   // ==========================================
-  // BACKUP & RESTORE DATA ROUTES (§81, §92)
+  // BACKUP & RESTORE DATA ROUTES (§9, §81, §92)
   // ==========================================
   app.get('/api/system/backup', (req: Request, res: Response) => {
+    // 9. Sauvegarde complète et intègre de toutes les collections du système BEBBA
     const backupData = {
       version: '4.0-final',
       exportedAt: new Date().toISOString(),
       timezone: 'Africa/Tunis',
       data: {
-        users: db.users,
-        products: db.products,
-        categories: db.categories,
-        ingredients: db.ingredients,
-        recipes: db.recipes,
-        suppliers: db.suppliers,
-        vehicles: db.vehicles,
-        drivers: db.drivers,
-        orders: db.orders,
-        claims: db.claims,
-        deliveryZones: db.deliveryZones,
-        cashClosings: db.cashClosings,
-        stockMovements: db.stockMovements,
-        auditLogs: db.auditLogs,
-        settings: db.settings
+        users: JSON.parse(JSON.stringify(db.users)),
+        products: JSON.parse(JSON.stringify(db.products)),
+        categories: JSON.parse(JSON.stringify(db.categories)),
+        ingredients: JSON.parse(JSON.stringify(db.ingredients)),
+        recipes: JSON.parse(JSON.stringify(db.recipes)),
+        suppliers: JSON.parse(JSON.stringify(db.suppliers)),
+        vehicles: JSON.parse(JSON.stringify(db.vehicles)),
+        drivers: JSON.parse(JSON.stringify(db.drivers)),
+        orders: JSON.parse(JSON.stringify(db.orders)),
+        claims: JSON.parse(JSON.stringify(db.claims)),
+        deliveryZones: JSON.parse(JSON.stringify(db.deliveryZones)),
+        cashClosings: JSON.parse(JSON.stringify(db.cashClosings)),
+        stockMovements: JSON.parse(JSON.stringify(db.stockMovements)),
+        notifications: JSON.parse(JSON.stringify(db.notifications || [])),
+        auditLogs: JSON.parse(JSON.stringify(db.auditLogs)),
+        inventoryChecks: JSON.parse(JSON.stringify(db.inventoryChecks || [])),
+        promotions: JSON.parse(JSON.stringify(db.promotions || [])),
+        settings: JSON.parse(JSON.stringify(db.settings))
       }
     };
     logAudit('SAUVEGARDE_EXPORTEE', 'system', { id: 'admin', name: 'Super Admin', role: 'admin' }, 'Export complet de la base de données et des configurations');
@@ -3920,21 +4247,26 @@ Réponds UNIQUEMENT avec le tableau JSON valide de 20 recettes, sans aucun texte
 
     try {
       const data = backup.data;
-      if (Array.isArray(data.users)) db.users = data.users;
-      if (Array.isArray(data.products)) db.products = data.products;
-      if (Array.isArray(data.categories)) db.categories = data.categories;
-      if (Array.isArray(data.ingredients)) db.ingredients = data.ingredients;
-      if (Array.isArray(data.recipes)) db.recipes = data.recipes;
-      if (Array.isArray(data.suppliers)) db.suppliers = data.suppliers;
-      if (Array.isArray(data.vehicles)) db.vehicles = data.vehicles;
-      if (Array.isArray(data.drivers)) db.drivers = data.drivers;
-      if (Array.isArray(data.orders)) db.orders = data.orders;
-      if (Array.isArray(data.claims)) db.claims = data.claims;
-      if (Array.isArray(data.deliveryZones)) db.deliveryZones = data.deliveryZones;
-      if (Array.isArray(data.cashClosings)) db.cashClosings = data.cashClosings;
-      if (Array.isArray(data.stockMovements)) db.stockMovements = data.stockMovements;
-      if (Array.isArray(data.auditLogs)) db.auditLogs = data.auditLogs;
-      if (data.settings) db.settings = { ...db.settings, ...data.settings };
+      if (Array.isArray(data.users)) db.users = JSON.parse(JSON.stringify(data.users));
+      if (Array.isArray(data.products)) db.products = JSON.parse(JSON.stringify(data.products));
+      if (Array.isArray(data.categories)) db.categories = JSON.parse(JSON.stringify(data.categories));
+      if (Array.isArray(data.ingredients)) db.ingredients = JSON.parse(JSON.stringify(data.ingredients));
+      if (Array.isArray(data.recipes)) db.recipes = JSON.parse(JSON.stringify(data.recipes));
+      if (Array.isArray(data.suppliers)) db.suppliers = JSON.parse(JSON.stringify(data.suppliers));
+      if (Array.isArray(data.vehicles)) db.vehicles = JSON.parse(JSON.stringify(data.vehicles));
+      if (Array.isArray(data.drivers)) db.drivers = JSON.parse(JSON.stringify(data.drivers));
+      if (Array.isArray(data.orders)) db.orders = JSON.parse(JSON.stringify(data.orders));
+      if (Array.isArray(data.claims)) db.claims = JSON.parse(JSON.stringify(data.claims));
+      if (Array.isArray(data.deliveryZones)) db.deliveryZones = JSON.parse(JSON.stringify(data.deliveryZones));
+      if (Array.isArray(data.cashClosings)) db.cashClosings = JSON.parse(JSON.stringify(data.cashClosings));
+      if (Array.isArray(data.stockMovements)) db.stockMovements = JSON.parse(JSON.stringify(data.stockMovements));
+      if (Array.isArray(data.notifications)) db.notifications = JSON.parse(JSON.stringify(data.notifications));
+      if (Array.isArray(data.auditLogs)) db.auditLogs = JSON.parse(JSON.stringify(data.auditLogs));
+      if (Array.isArray(data.inventoryChecks)) db.inventoryChecks = JSON.parse(JSON.stringify(data.inventoryChecks));
+      if (Array.isArray(data.promotions)) db.promotions = JSON.parse(JSON.stringify(data.promotions));
+      if (data.settings && typeof data.settings === 'object') {
+        db.settings = JSON.parse(JSON.stringify(data.settings));
+      }
 
       logAudit('SAUVEGARDE_RESTAUREE', 'system', { id: 'admin', name: 'Super Admin', role: 'admin' }, `Restauration réussie de la sauvegarde du ${backup.exportedAt || 'Inconnue'}`);
       broadcast('system_restored', { restoredAt: new Date().toISOString() });

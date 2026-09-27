@@ -171,14 +171,17 @@ export const MenuCatalog: React.FC<MenuCatalogProps> = ({
 
   const handleAddAllFavoritesToCart = () => {
     if (filteredProducts.length === 0) return;
-    filteredProducts.forEach(prod => {
-      addToCart(prod, 1, [], 'Commande rapide repas favori');
-    });
+    filteredProducts
+      .filter(p => p.isAvailable !== false)
+      .forEach(prod => {
+        addToCart(prod, 1, [], 'Commande rapide repas favori');
+      });
     setBatchAdded(true);
     setTimeout(() => setBatchAdded(false), 2000);
   };
 
   const handleOpenCustomize = (prod: Product) => {
+    if (prod.isAvailable === false) return;
     setSelectedProduct(prod);
     setSelectedOptions([]);
     setSpecialInstructions('');
@@ -199,12 +202,13 @@ export const MenuCatalog: React.FC<MenuCatalogProps> = ({
   const calculatedTotal = parseFloat((calculatedUnitPrice * quantity).toFixed(2));
 
   const handleAddToCart = () => {
-    if (!selectedProduct) return;
+    if (!selectedProduct || selectedProduct.isAvailable === false) return;
     addToCart(selectedProduct, quantity, selectedOptions, specialInstructions);
     setSelectedProduct(null);
   };
 
   const handleQuickOrder = (prod: Product) => {
+    if (prod.isAvailable === false) return;
     addToCart(prod, 1, [], '');
     setAddedProductId(prod.id);
     setTimeout(() => {
@@ -590,9 +594,16 @@ export const MenuCatalog: React.FC<MenuCatalogProps> = ({
                   alt={prod.name}
                   className="w-full h-full object-cover group-hover:scale-105 transition duration-500"
                 />
-                <span className="absolute top-3 left-3 bg-stone-900/80 backdrop-blur-md text-white text-[11px] font-semibold px-2.5 py-1 rounded-md">
-                  {prod.category}
-                </span>
+                <div className="absolute top-3 left-3 flex items-center gap-1.5">
+                  <span className="bg-stone-900/80 backdrop-blur-md text-white text-[11px] font-semibold px-2.5 py-1 rounded-md">
+                    {prod.category}
+                  </span>
+                  {prod.isAvailable === false && (
+                    <span className="bg-rose-600/90 backdrop-blur-md text-white text-[10px] font-black px-2 py-0.5 rounded-md shadow-xs uppercase tracking-wider">
+                      Indisponible
+                    </span>
+                  )}
+                </div>
 
                 {/* Heart Button */}
                 <button
@@ -662,38 +673,46 @@ export const MenuCatalog: React.FC<MenuCatalogProps> = ({
                     </span>
                   </div>
 
-                  {/* Bouton Commander (situé entre Prix unitaire et le bouton Personnaliser) */}
-                  <button
-                    onClick={() => handleQuickOrder(prod)}
-                    className={`px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-sm transition cursor-pointer ${
-                      addedProductId === prod.id
-                        ? 'bg-emerald-700 text-white'
-                        : 'bg-emerald-600 hover:bg-emerald-700 text-white'
-                    }`}
-                    title="Commander directement ce plat (recette standard)"
-                  >
-                    {addedProductId === prod.id ? (
-                      <>
-                        <Check className="w-3.5 h-3.5 text-emerald-200" />
-                        <span>Ajouté !</span>
-                      </>
-                    ) : (
-                      <>
-                        <ShoppingBag className="w-3.5 h-3.5" />
-                        <span>Commander</span>
-                      </>
-                    )}
-                  </button>
+                  {prod.isAvailable === false ? (
+                    <span className="px-3 py-2 rounded-xl text-xs font-bold bg-stone-100 text-stone-400 border border-stone-200 cursor-not-allowed select-none">
+                      Indisponible
+                    </span>
+                  ) : (
+                    <div className="flex items-center gap-1.5">
+                      {/* Bouton Commander (situé entre Prix unitaire et le bouton Personnaliser) */}
+                      <button
+                        onClick={() => handleQuickOrder(prod)}
+                        className={`px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-sm transition cursor-pointer ${
+                          addedProductId === prod.id
+                            ? 'bg-emerald-700 text-white'
+                            : 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                        }`}
+                        title="Commander directement ce plat (recette standard)"
+                      >
+                        {addedProductId === prod.id ? (
+                          <>
+                            <Check className="w-3.5 h-3.5 text-emerald-200" />
+                            <span>Ajouté !</span>
+                          </>
+                        ) : (
+                          <>
+                            <ShoppingBag className="w-3.5 h-3.5" />
+                            <span>Commander</span>
+                          </>
+                        )}
+                      </button>
 
-                  {/* Bouton Personnaliser */}
-                  <button
-                    onClick={() => handleOpenCustomize(prod)}
-                    className="bg-stone-100 hover:bg-stone-200 text-stone-700 hover:text-stone-900 px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 border border-stone-200 transition cursor-pointer"
-                    title="Personnaliser les ingrédients et options"
-                  >
-                    <SlidersHorizontal className="w-3.5 h-3.5 text-stone-500" />
-                    <span>Personnaliser</span>
-                  </button>
+                      {/* Bouton Personnaliser */}
+                      <button
+                        onClick={() => handleOpenCustomize(prod)}
+                        className="bg-stone-100 hover:bg-stone-200 text-stone-700 hover:text-stone-900 px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 border border-stone-200 transition cursor-pointer"
+                        title="Personnaliser les ingrédients et options"
+                      >
+                        <SlidersHorizontal className="w-3.5 h-3.5 text-stone-500" />
+                        <span>Personnaliser</span>
+                      </button>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
