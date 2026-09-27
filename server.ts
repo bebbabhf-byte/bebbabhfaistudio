@@ -351,13 +351,14 @@ function generateTrackingToken(): string {
 }
 
 // Helper for numeric validations (§8)
-function isValidNumber(val: any, options: { min?: number; allowZero?: boolean; integer?: boolean } = {}): boolean {
+function isValidNumber(val: any, options: { min?: number; max?: number; allowZero?: boolean; integer?: boolean } = {}): boolean {
   if (val === undefined || val === null || val === '') return false;
   const num = typeof val === 'number' ? val : Number(val);
   if (typeof num !== 'number' || isNaN(num) || !isFinite(num)) return false;
   if (options.integer && !Number.isInteger(num)) return false;
   const minVal = options.min !== undefined ? options.min : (options.allowZero !== false ? 0 : 0.0001);
   if (num < minVal) return false;
+  if (options.max !== undefined && num > options.max) return false;
   if (options.allowZero === false && num <= 0) return false;
   return true;
 }
@@ -1327,6 +1328,19 @@ async function startServer() {
       order.prepCompletedAt = now;
       logAudit('COMMANDE_PRETE', 'kitchen', userRef, `Commande ${order.orderNumber} prête pour expédition`);
     } else if (nextStatus === 'delivering') {
+      // 3. Livraison sans livreur interdite
+      if (!order.assignedDriverId || !order.assignedDriverId.trim()) {
+        return res.status(400).json({
+          error: 'Impossible de passer la commande en livraison : aucun livreur n\'est affecté à cette commande.'
+        });
+      }
+      const assignedDriver = db.drivers.find(d => d.userId === order.assignedDriverId || d.id === order.assignedDriverId);
+      if (!assignedDriver) {
+        return res.status(400).json({
+          error: 'Impossible de passer la commande en livraison : le livreur affecté est introuvable.'
+        });
+      }
+
       // Driver started delivery
       if (!order.currentLocation) {
         order.currentLocation = {
@@ -1343,7 +1357,12 @@ async function startServer() {
       order.deliveredAt = now;
       logAudit('COMMANDE_LIVREE', 'delivery', userRef, `Commande ${order.orderNumber} remise au client`);
     } else if (nextStatus === 'cancelled') {
-      // 5. Annulation et restitution du stock
+      // 2. Annulation d'une commande payée refusée
+      if (order.paymentStatus === 'paid') {
+        return res.status(400).json({
+          error: 'Impossible d\'annuler une commande déjà payée : aucun mécanisme de remboursement n\'est configuré.'
+        });
+      }
       if (currentStatus === 'delivered') {
         return res.status(400).json({ error: 'Impossible d annuler une commande déjà livrée.' });
       }
@@ -1421,7 +1440,22 @@ async function startServer() {
       return res.status(404).json({ error: 'Livreur non trouvé' });
     }
 
+    // 4. Affectation d'un livreur : seul le statut 'available' est accepté
+    if (driver.status !== 'available') {
+      return res.status(400).json({
+        error: `Impossible d'affecter le livreur ${driver.name} : son statut actuel est "${driver.status}". Seuls les livreurs disponibles ("available") peuvent recevoir une commande.`
+      });
+    }
+
     const isReassignment = !!order.assignedDriverId;
+    if (order.assignedDriverId && order.assignedDriverId !== driver.userId) {
+      const oldDriver = db.drivers.find(d => d.userId === order.assignedDriverId || d.id === order.assignedDriverId);
+      if (oldDriver && oldDriver.activeOrderId === order.id) {
+        oldDriver.status = 'available';
+        oldDriver.activeOrderId = undefined;
+      }
+    }
+
     order.assignedDriverId = driver.userId;
     order.assignedDriverName = driver.name;
     order.assignedDriverPhone = driver.phone;
@@ -1463,6 +1497,13 @@ async function startServer() {
 
     const newDriver = db.drivers.find(d => d.id === newDriverId || d.userId === newDriverId);
     if (!newDriver) return res.status(404).json({ error: 'Nouveau livreur non trouvé' });
+
+    // 4. Affectation/Réaffectation : seul le statut 'available' est accepté
+    if (newDriver.status !== 'available') {
+      return res.status(400).json({
+        error: `Impossible de réaffecter la commande au livreur ${newDriver.name} : son statut actuel est "${newDriver.status}". Seuls les livreurs disponibles ("available") peuvent recevoir une commande.`
+      });
+    }
 
     const oldDriverId = order.assignedDriverId || 'none';
     const oldDriverName = order.assignedDriverName || 'Non assigné';
@@ -1521,6 +1562,13 @@ async function startServer() {
 
     const order = db.orders.find(o => o.id === id);
     if (!order) return res.status(404).json({ error: 'Commande non trouvée' });
+
+    // 2. Annulation d'une commande déjà payée refusée
+    if (order.paymentStatus === 'paid') {
+      return res.status(400).json({
+        error: 'Impossible d\'annuler une commande déjà payée : aucun mécanisme de remboursement n\'est configuré.'
+      });
+    }
 
     if (order.orderStatus === 'delivered') {
       return res.status(400).json({ error: 'Impossible d annuler une commande déjà livrée.' });
@@ -1629,11 +1677,25 @@ async function startServer() {
       return res.status(400).json({ error: 'Impossible d\'encaisser une commande annulée.' });
     }
 
-    const rawAmount = collectedAmount !== undefined ? collectedAmount : (req.body.amount !== undefined ? req.body.amount : order.totalAmount);
-    if (!isValidNumber(rawAmount, { min: 0, allowZero: true })) {
-      return res.status(400).json({ error: 'Montant encaissé invalide (doit être un nombre positif ou nul).' });
+    // 1. Encaissement : montant obligatoire, strict, correspondant au montant réel
+    const rawAmount = collectedAmount !== undefined ? collectedAmount : (req.body.amount !== undefined ? req.body.amount : undefined);
+    if (rawAmount === undefined || !isValidNumber(rawAmount, { min: 0.001, allowZero: false })) {
+      return res.status(400).json({ error: 'Montant encaissé invalide (doit être un nombre strictement supérieur à zéro).' });
     }
-    const amount = parseFloat(rawAmount);
+    const amount = parseFloat(Number(rawAmount).toFixed(2));
+    const expectedAmount = parseFloat(order.totalAmount.toFixed(2));
+
+    if (amount < expectedAmount) {
+      return res.status(400).json({
+        error: `Montant encaissé insuffisant (${amount.toFixed(2)} DT). Le paiement complet requiert exactement le montant réel de la commande (${expectedAmount.toFixed(2)} DT).`
+      });
+    }
+    if (amount > expectedAmount) {
+      return res.status(400).json({
+        error: `Montant encaissé supérieur au montant de la commande (${amount.toFixed(2)} DT). Le montant encaissé doit correspondre exactement au montant réel de la commande (${expectedAmount.toFixed(2)} DT).`
+      });
+    }
+
     order.paymentStatus = 'paid';
     order.paidAt = new Date().toISOString();
     order.paidBy = collectorName || (performedBy && performedBy.name) || 'Livreur Bebba';
@@ -1676,12 +1738,35 @@ async function startServer() {
       return res.status(400).json({ error: 'Partage GPS actif uniquement pendant le statut "delivering"' });
     }
 
+    // 8. Validation stricte des coordonnées GPS
+    if (!isValidNumber(latitude, { min: -90, max: 90, allowZero: true })) {
+      return res.status(400).json({ error: 'Latitude GPS invalide. La valeur doit être un nombre compris entre -90 et 90.' });
+    }
+    if (!isValidNumber(longitude, { min: -180, max: 180, allowZero: true })) {
+      return res.status(400).json({ error: 'Longitude GPS invalide. La valeur doit être un nombre compris entre -180 et 180.' });
+    }
+    if (accuracy !== undefined && !isValidNumber(accuracy, { min: 0, allowZero: true })) {
+      return res.status(400).json({ error: 'Précision GPS invalide. La valeur doit être un nombre positif ou nul.' });
+    }
+    if (speed !== undefined && speed !== null && !isValidNumber(speed, { min: 0, allowZero: true })) {
+      return res.status(400).json({ error: 'Vitesse GPS invalide. La valeur doit être un nombre positif ou nul.' });
+    }
+    if (heading !== undefined && heading !== null && !isValidNumber(heading, { min: 0, max: 360, allowZero: true })) {
+      return res.status(400).json({ error: 'Cap (heading) GPS invalide. La valeur doit être comprise entre 0 et 360.' });
+    }
+
+    const numLat = parseFloat(Number(latitude).toFixed(6));
+    const numLng = parseFloat(Number(longitude).toFixed(6));
+    const numAccuracy = accuracy !== undefined ? parseFloat(Number(accuracy).toFixed(2)) : 10;
+    const numHeading = heading !== undefined && heading !== null ? parseFloat(Number(heading).toFixed(2)) : undefined;
+    const numSpeed = speed !== undefined && speed !== null ? parseFloat(Number(speed).toFixed(2)) : undefined;
+
     const gpsPoint = {
-      latitude: parseFloat(latitude),
-      longitude: parseFloat(longitude),
-      accuracy: accuracy ? parseFloat(accuracy) : 10,
-      heading: heading !== undefined ? parseFloat(heading) : undefined,
-      speed: speed !== undefined ? parseFloat(speed) : undefined,
+      latitude: numLat,
+      longitude: numLng,
+      accuracy: numAccuracy,
+      heading: numHeading,
+      speed: numSpeed,
       timestamp: new Date().toISOString()
     };
 
@@ -1862,13 +1947,21 @@ async function startServer() {
     }
 
     const now = new Date().toISOString();
-    if (status) {
-      const upper = status.toUpperCase();
-      if (['OPEN', 'IN_REVIEW', 'RESOLVED', 'CLOSED'].includes(upper)) {
-        claim.status = upper as ClaimStatus;
-      } else {
-        claim.status = status as ClaimStatus;
+    // 7. Validation stricte des statuts de réclamation avec liste blanche
+    const VALID_CLAIM_STATUSES: ClaimStatus[] = ['OPEN', 'IN_REVIEW', 'RESOLVED', 'CLOSED'];
+    if (status !== undefined) {
+      if (!status || typeof status !== 'string') {
+        return res.status(400).json({
+          error: 'Le statut de la réclamation doit être une chaîne non vide.'
+        });
       }
+      const upper = status.trim().toUpperCase() as ClaimStatus;
+      if (!VALID_CLAIM_STATUSES.includes(upper)) {
+        return res.status(400).json({
+          error: `Statut de réclamation invalide : "${status}". Statuts autorisés : ${VALID_CLAIM_STATUSES.join(', ')}`
+        });
+      }
+      claim.status = upper;
     }
     if (resolution) claim.resolution = resolution as ClaimResolution;
     if (resolutionNotes) claim.resolutionNotes = resolutionNotes;
@@ -2144,16 +2237,28 @@ async function startServer() {
       return res.status(400).json({ error: 'Liste d inventaire compté obligatoire.' });
     }
 
+    // 6. Inventaire : Une ligne d’inventaire invalide fait échouer l’opération entière
+    for (const item of countedItems) {
+      if (!item || !item.ingredientId || typeof item.ingredientId !== 'string') {
+        return res.status(400).json({ error: 'Chaque ligne d\'inventaire doit comporter un identifiant d\'ingrédient (ingredientId) valide.' });
+      }
+      const ing = db.ingredients.find(i => i.id === item.ingredientId);
+      if (!ing) {
+        return res.status(400).json({ error: `L'ingrédient "${item.ingredientId}" n'existe pas dans le stock.` });
+      }
+      if (!isValidNumber(item.countedStock, { min: 0, allowZero: true })) {
+        return res.status(400).json({
+          error: `Quantité de stock compté invalide pour "${ing.name}". La valeur doit être un nombre positif ou nul.`
+        });
+      }
+    }
+
     const checkItems: any[] = [];
     let totalCostImpact = 0;
 
     for (const item of countedItems) {
-      const ing = db.ingredients.find(i => i.id === item.ingredientId);
-      if (!ing) continue;
-
-      const countedStock = parseFloat(item.countedStock);
-      if (isNaN(countedStock) || countedStock < 0) continue;
-
+      const ing = db.ingredients.find(i => i.id === item.ingredientId)!;
+      const countedStock = parseFloat(Number(item.countedStock).toFixed(3));
       const theoretical = ing.currentStock;
       const difference = parseFloat((countedStock - theoretical).toFixed(3));
       const costImpact = parseFloat((difference * ing.unitCost).toFixed(2));
@@ -2230,33 +2335,56 @@ async function startServer() {
 
   app.post(['/api/recipes', '/api/stock/recipes'], (req: Request, res: Response) => {
     const { productId, productName, ingredients } = req.body;
-    if (!productId || !ingredients || !Array.isArray(ingredients)) {
-      return res.status(400).json({ error: 'Produit et liste d ingrédients obligatoires.' });
+    // 5. Validation produit
+    if (!productId || typeof productId !== 'string') {
+      return res.status(400).json({ error: 'Le champ productId est obligatoire.' });
     }
 
     const product = db.products.find(p => p.id === productId);
+    if (!product) {
+      return res.status(400).json({ error: `Le produit "${productId}" n'existe pas dans le catalogue.` });
+    }
+
+    if (!ingredients || !Array.isArray(ingredients) || ingredients.length === 0) {
+      return res.status(400).json({ error: 'Une recette doit contenir au moins un ingrédient.' });
+    }
+
+    // 5. Validation ingrédients et quantités
+    const validatedIngredients = [];
+    for (const item of ingredients) {
+      if (!item || !item.ingredientId || typeof item.ingredientId !== 'string') {
+        return res.status(400).json({ error: 'Chaque élément de recette doit spécifier un identifiant d\'ingrédient (ingredientId).' });
+      }
+      const ing = db.ingredients.find(i => i.id === item.ingredientId);
+      if (!ing) {
+        return res.status(400).json({ error: `L'ingrédient "${item.ingredientId}" n'existe pas dans le stock.` });
+      }
+      if (!isValidNumber(item.quantity, { min: 0.0001, allowZero: false })) {
+        return res.status(400).json({
+          error: `Quantité invalide pour l'ingrédient "${ing.name}". La quantité doit être un nombre strictement supérieur à zéro.`
+        });
+      }
+      const qty = parseFloat(Number(item.quantity).toFixed(3));
+      validatedIngredients.push({
+        ingredientId: ing.id,
+        ingredientName: ing.name,
+        quantity: qty,
+        unit: ing.unit || item.unit || 'g',
+        unitCost: ing.unitCost || 0
+      });
+    }
+
     const newRecipe: Recipe = {
       id: `rec_${Date.now()}`,
       productId,
-      productName: productName || (product ? product.name : 'Produit Bebba'),
-      ingredients: ingredients.map((item: any) => {
-        const ing = db.ingredients.find(i => i.id === item.ingredientId);
-        return {
-          ingredientId: item.ingredientId,
-          ingredientName: ing ? ing.name : item.ingredientName,
-          quantity: parseFloat(item.quantity) || 0,
-          unit: ing ? ing.unit : (item.unit || 'g'),
-          unitCost: ing ? ing.unitCost : 0
-        };
-      })
+      productName: productName || product.name,
+      ingredients: validatedIngredients
     };
 
     newRecipe.theoreticalCost = parseFloat(computeRecipeCost(newRecipe).toFixed(2));
     db.recipes.push(newRecipe);
 
-    if (product) {
-      product.recipeId = newRecipe.id;
-    }
+    product.recipeId = newRecipe.id;
 
     logAudit('RECETTE_CREEE', 'stock', { id: 'admin', name: 'Admin', role: 'admin' }, `Nouvelle recette pour ${newRecipe.productName} (Coût théorique : ${newRecipe.theoreticalCost} DT)`);
     broadcast('recipe_updated', newRecipe);
@@ -2267,19 +2395,48 @@ async function startServer() {
     const recipe = db.recipes.find(r => r.id === req.params.id);
     if (!recipe) return res.status(404).json({ error: 'Recette introuvable' });
 
-    const { ingredients, productName } = req.body;
+    const { productId, ingredients, productName } = req.body;
+    if (productId !== undefined) {
+      if (!productId || typeof productId !== 'string') {
+        return res.status(400).json({ error: 'Le champ productId doit être une chaîne valide.' });
+      }
+      const product = db.products.find(p => p.id === productId);
+      if (!product) {
+        return res.status(400).json({ error: `Le produit "${productId}" n'existe pas dans le catalogue.` });
+      }
+      recipe.productId = productId;
+      if (!productName) recipe.productName = product.name;
+    }
+
     if (productName) recipe.productName = productName;
-    if (ingredients && Array.isArray(ingredients)) {
-      recipe.ingredients = ingredients.map((item: any) => {
+    if (ingredients !== undefined) {
+      if (!Array.isArray(ingredients) || ingredients.length === 0) {
+        return res.status(400).json({ error: 'La liste des ingrédients doit contenir au moins un ingrédient.' });
+      }
+      const validatedIngredients = [];
+      for (const item of ingredients) {
+        if (!item || !item.ingredientId || typeof item.ingredientId !== 'string') {
+          return res.status(400).json({ error: 'Chaque élément de recette doit spécifier un identifiant d\'ingrédient (ingredientId).' });
+        }
         const ing = db.ingredients.find(i => i.id === item.ingredientId);
-        return {
-          ingredientId: item.ingredientId,
-          ingredientName: ing ? ing.name : item.ingredientName,
-          quantity: parseFloat(item.quantity) || 0,
-          unit: ing ? ing.unit : (item.unit || 'g'),
-          unitCost: ing ? ing.unitCost : 0
-        };
-      });
+        if (!ing) {
+          return res.status(400).json({ error: `L'ingrédient "${item.ingredientId}" n'existe pas dans le stock.` });
+        }
+        if (!isValidNumber(item.quantity, { min: 0.0001, allowZero: false })) {
+          return res.status(400).json({
+            error: `Quantité invalide pour l'ingrédient "${ing.name}". La quantité doit être un nombre strictement supérieur à zéro.`
+          });
+        }
+        const qty = parseFloat(Number(item.quantity).toFixed(3));
+        validatedIngredients.push({
+          ingredientId: ing.id,
+          ingredientName: ing.name,
+          quantity: qty,
+          unit: ing.unit || item.unit || 'g',
+          unitCost: ing.unitCost || 0
+        });
+      }
+      recipe.ingredients = validatedIngredients;
     }
 
     recipe.theoreticalCost = parseFloat(computeRecipeCost(recipe).toFixed(2));
