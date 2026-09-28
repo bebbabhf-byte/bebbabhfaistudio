@@ -24,7 +24,10 @@ import {
   X
 } from 'lucide-react';
 
+import { useToast } from '../../context/ToastContext';
+
 export const CatalogTab: React.FC = () => {
+  const { showSuccess, showError } = useToast();
   const [products, setProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [activeSubTab, setActiveSubTab] = useState<'products' | 'categories'>('products');
@@ -112,22 +115,25 @@ export const CatalogTab: React.FC = () => {
     try {
       if (editingProduct) {
         await updateProduct(editingProduct.id, productForm);
+        showSuccess(`Produit « ${productForm.name} » mis à jour.`);
       } else {
         await createProduct(productForm);
+        showSuccess(`Produit « ${productForm.name} » créé avec succès.`);
       }
       setIsProductModalOpen(false);
       loadData();
     } catch (err: any) {
-      alert(err.message || 'Erreur enregistrement produit');
+      showError(err.message || 'Erreur enregistrement produit');
     }
   };
 
   const handleToggleProductAvailability = async (product: Product) => {
     try {
       await updateProduct(product.id, { isAvailable: !product.isAvailable });
+      showSuccess(`Produit « ${product.name} » marqué comme ${!product.isAvailable ? 'disponible' : 'en rupture'}.`);
       loadData();
     } catch (err: any) {
-      alert(err.message || 'Erreur mise à jour');
+      showError(err.message || 'Erreur mise à jour disponibilité');
     }
   };
 
@@ -155,13 +161,15 @@ export const CatalogTab: React.FC = () => {
     try {
       if (editingCategory) {
         await updateCategory(editingCategory.id, categoryForm);
+        showSuccess(`Catégorie « ${categoryForm.name} » mise à jour.`);
       } else {
         await createCategory(categoryForm);
+        showSuccess(`Catégorie « ${categoryForm.name} » créée avec succès.`);
       }
       setIsCategoryModalOpen(false);
       loadData();
     } catch (err: any) {
-      alert(err.message || 'Erreur enregistrement catégorie');
+      showError(err.message || 'Erreur enregistrement catégorie');
     }
   };
 
@@ -169,9 +177,10 @@ export const CatalogTab: React.FC = () => {
     if (!confirm('Supprimer cette catégorie ?')) return;
     try {
       await deleteCategory(id);
+      showSuccess('Catégorie supprimée avec succès.');
       loadData();
     } catch (err: any) {
-      alert(err.message || 'Erreur suppression');
+      showError(err.message || 'Erreur suppression catégorie');
     }
   };
 

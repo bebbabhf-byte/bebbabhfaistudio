@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Order, OrderStatus } from '../../types';
 import { fetchOrders, fetchTrackingByToken } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
+import { useToast } from '../../context/ToastContext';
 import {
   MapPin,
   Bike,
@@ -32,6 +33,7 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
   onOpenClaim
 }) => {
   const { currentUser } = useAuth();
+  const { showError, showSuccess } = useToast();
   const [orders, setOrders] = useState<Order[]>([]);
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
   const [tokenInput, setTokenInput] = useState(initialToken || '');
@@ -99,8 +101,9 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
         // Construct temporary order representation
         setSelectedOrder(trackingData as any);
       }
+      showSuccess(`Commande ${trackingData?.orderNumber || tokenInput} trouvée.`);
     } catch (err: any) {
-      alert(err.message || 'Token introuvable');
+      showError(err.message || 'Code de suivi introuvable. Vérifiez votre saisie.');
     } finally {
       setLoading(false);
     }

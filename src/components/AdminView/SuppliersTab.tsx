@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Supplier, Ingredient } from '../../types';
 import { fetchSuppliers, fetchIngredients, createSupplier, updateSupplier, deleteSupplier } from '../../services/api';
+import { useToast } from '../../context/ToastContext';
 import {
   Truck,
   Plus,
@@ -18,6 +19,7 @@ import {
 } from 'lucide-react';
 
 export const SuppliersTab: React.FC = () => {
+  const { showSuccess, showError } = useToast();
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [ingredients, setIngredients] = useState<Ingredient[]>([]);
   const [search, setSearch] = useState('');
@@ -85,13 +87,15 @@ export const SuppliersTab: React.FC = () => {
     try {
       if (editingSupplier) {
         await updateSupplier(editingSupplier.id, form);
+        showSuccess(`Fournisseur « ${form.name} » mis à jour.`);
       } else {
         await createSupplier(form);
+        showSuccess(`Fournisseur « ${form.name} » ajouté avec succès.`);
       }
       setIsModalOpen(false);
       loadData();
     } catch (err: any) {
-      alert(err.message || 'Erreur enregistrement fournisseur');
+      showError(err.message || 'Erreur enregistrement fournisseur');
     }
   };
 
@@ -99,9 +103,10 @@ export const SuppliersTab: React.FC = () => {
     if (!confirm('Désactiver ce fournisseur ?')) return;
     try {
       await deleteSupplier(id);
+      showSuccess('Fournisseur désactivé avec succès.');
       loadData();
     } catch (err: any) {
-      alert(err.message || 'Erreur');
+      showError(err.message || 'Erreur désactivation fournisseur');
     }
   };
 

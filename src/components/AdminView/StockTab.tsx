@@ -9,6 +9,7 @@ import {
   fetchSuppliers
 } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
+import { useToast } from '../../context/ToastContext';
 import { StockWasteModal, PhysicalInventoryModal } from './StockActionModals';
 import { StockMovementsModal } from './StockMovementsModal';
 import {
@@ -30,6 +31,7 @@ import {
 
 export const StockTab: React.FC = () => {
   const { currentUser } = useAuth();
+  const { showSuccess, showError } = useToast();
   const [ingredients, setIngredients] = useState<Ingredient[]>([]);
   const [suppliers, setSuppliers] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -115,13 +117,15 @@ export const StockTab: React.FC = () => {
 
       if (editingIngredient) {
         await updateIngredient(editingIngredient.id, payload);
+        showSuccess(`Ingrédient « ${payload.name} » mis à jour.`);
       } else {
         await createIngredient(payload);
+        showSuccess(`Ingrédient « ${payload.name} » créé avec succès.`);
       }
       setIsIngredientModalOpen(false);
       loadData();
     } catch (e: any) {
-      alert(e.message || 'Erreur enregistrement ingrédient');
+      showError(e.message || 'Erreur enregistrement ingrédient');
     }
   };
 
@@ -137,10 +141,11 @@ export const StockTab: React.FC = () => {
         reason: restockReason.trim() || 'Réapprovisionnement fournisseur direct',
         performedBy: currentUser.name || 'Admin Stock'
       });
+      showSuccess(`+${restockQty} ${restockIngredient.unit} ajoutés au stock de « ${restockIngredient.name} »`);
       setRestockIngredient(null);
       loadData();
     } catch (e: any) {
-      alert(e.message || 'Erreur restock');
+      showError(e.message || 'Erreur restock');
     }
   };
 
@@ -148,9 +153,10 @@ export const StockTab: React.FC = () => {
     if (!confirm(`Désactiver l'ingrédient « ${ing.name} » ? L'historique sera préservé (§15).`)) return;
     try {
       await deleteIngredient(ing.id);
+      showSuccess(`Ingrédient « ${ing.name} » désactivé avec succès.`);
       loadData();
     } catch (e: any) {
-      alert(e.message || 'Erreur désactivation');
+      showError(e.message || 'Erreur désactivation');
     }
   };
 

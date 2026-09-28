@@ -33,7 +33,10 @@ import {
   SlidersHorizontal
 } from 'lucide-react';
 
+import { useToast } from '../../context/ToastContext';
+
 export const FleetTab: React.FC = () => {
+  const { showSuccess, showError, showWarning } = useToast();
   const [subTab, setSubTab] = useState<'drivers' | 'vehicles'>('drivers');
   const [drivers, setDrivers] = useState<DriverProfile[]>([]);
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
@@ -155,7 +158,7 @@ export const FleetTab: React.FC = () => {
 
   const handleDeleteDriver = async (driver: DriverProfile) => {
     if (driver.status === 'busy') {
-      alert(`Impossible de supprimer le livreur « ${driver.name} » car il est actuellement en cours de livraison.`);
+      showWarning(`Impossible de supprimer le livreur « ${driver.name} » car il est actuellement en cours de livraison.`);
       return;
     }
 
@@ -169,9 +172,10 @@ export const FleetTab: React.FC = () => {
 
     try {
       await deleteDriver(driver.id);
+      showSuccess(`Livreur « ${driver.name} » supprimé avec succès.`);
       loadData();
     } catch (err: any) {
-      alert(err.message || 'Erreur lors de la suppression');
+      showError(err.message || 'Erreur lors de la suppression');
     }
   };
 
@@ -180,7 +184,7 @@ export const FleetTab: React.FC = () => {
     const actionName = isInactive ? 'réactiver' : 'désactiver';
 
     if (driver.status === 'busy') {
-      alert('Impossible de désactiver un livreur en cours de livraison.');
+      showWarning('Impossible de désactiver un livreur en cours de livraison.');
       return;
     }
 
@@ -190,9 +194,10 @@ export const FleetTab: React.FC = () => {
 
     try {
       await toggleDriverActive(driver.id);
+      showSuccess(`Livreur « ${driver.name} » ${isInactive ? 'réactivé' : 'désactivé'}.`);
       loadData();
     } catch (err: any) {
-      alert(err.message || 'Erreur lors du changement de statut');
+      showError(err.message || 'Erreur lors du changement de statut');
     }
   };
 
@@ -278,9 +283,10 @@ export const FleetTab: React.FC = () => {
 
     try {
       await deleteVehicle(veh.id);
+      showSuccess(`Véhicule « ${veh.model} (${veh.licensePlate}) » supprimé avec succès.`);
       loadData();
     } catch (err: any) {
-      alert(err.message || 'Erreur suppression véhicule');
+      showError(err.message || 'Erreur suppression véhicule');
     }
   };
 
@@ -294,9 +300,10 @@ export const FleetTab: React.FC = () => {
 
     try {
       await toggleVehicleActive(veh.id);
+      showSuccess(`Véhicule « ${veh.model} (${veh.licensePlate}) » ${isInactive ? 'réactivé' : 'désactivé'}.`);
       loadData();
     } catch (err: any) {
-      alert(err.message || 'Erreur bascule véhicule');
+      showError(err.message || 'Erreur bascule véhicule');
     }
   };
 

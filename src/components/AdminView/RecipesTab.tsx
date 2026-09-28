@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Recipe, Ingredient, Product } from '../../types';
 import { fetchRecipes, fetchIngredients, fetchProducts, createRecipe, updateRecipe, deleteRecipe } from '../../services/api';
+import { useToast } from '../../context/ToastContext';
 import {
   ChefHat,
   Plus,
@@ -15,6 +16,7 @@ import {
 } from 'lucide-react';
 
 export const RecipesTab: React.FC = () => {
+  const { showSuccess, showError } = useToast();
   const [recipes, setRecipes] = useState<Recipe[]>([]);
   const [ingredients, setIngredients] = useState<Ingredient[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
@@ -121,13 +123,15 @@ export const RecipesTab: React.FC = () => {
     try {
       if (editingRecipe) {
         await updateRecipe(editingRecipe.id, payload);
+        showSuccess(`Fiche technique de « ${payload.productName} » mise à jour.`);
       } else {
         await createRecipe(payload);
+        showSuccess(`Fiche technique de « ${payload.productName} » créée avec succès.`);
       }
       setIsModalOpen(false);
       loadData();
     } catch (err: any) {
-      alert(err.message || 'Erreur enregistrement recette');
+      showError(err.message || 'Erreur enregistrement recette');
     }
   };
 
@@ -135,9 +139,10 @@ export const RecipesTab: React.FC = () => {
     if (!confirm('Supprimer cette fiche technique ?')) return;
     try {
       await deleteRecipe(id);
+      showSuccess('Fiche technique supprimée avec succès.');
       loadData();
     } catch (err: any) {
-      alert(err.message || 'Erreur');
+      showError(err.message || 'Erreur suppression recette');
     }
   };
 

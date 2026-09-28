@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Order, DriverProfile } from '../../types';
 import { fetchOrders, updateOrderStatus, collectPayment, sendDriverLocation, fetchDrivers } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
+import { useToast } from '../../context/ToastContext';
 import {
   Bike,
   Navigation,
@@ -21,6 +22,7 @@ import {
 
 export const DriverDashboard: React.FC = () => {
   const { currentUser } = useAuth();
+  const { showSuccess, showError, showWarning, showInfo } = useToast();
   const [orders, setOrders] = useState<Order[]>([]);
   const [driverProfile, setDriverProfile] = useState<DriverProfile | null>(null);
   const [isSimulatingGps, setIsSimulatingGps] = useState(false);
@@ -85,10 +87,11 @@ export const DriverDashboard: React.FC = () => {
         name: currentUser.name,
         role: 'driver'
       });
+      showSuccess(`Livraison démarrée pour la commande ${order.orderNumber}`);
       loadDriverData();
       startGpsTracking(order.id);
     } catch (err: any) {
-      alert(err.message || 'Erreur départ livraison');
+      showError(err.message || 'Erreur départ livraison');
     }
   };
 
@@ -101,9 +104,10 @@ export const DriverDashboard: React.FC = () => {
         role: 'driver'
       });
       stopGpsTracking();
+      showSuccess(`Commande ${order.orderNumber} remise au client avec succès !`);
       loadDriverData();
     } catch (err: any) {
-      alert(err.message || 'Erreur confirmation');
+      showError(err.message || 'Erreur confirmation');
     }
   };
 
@@ -111,7 +115,7 @@ export const DriverDashboard: React.FC = () => {
   const handleConfirmPayment = async (order: Order) => {
     // Vérification stricte : la livraison doit être confirmée au préalable
     if (order.orderStatus !== 'delivered') {
-      alert("L'encaissement par le livreur ne peut être validé que si la livraison est confirmée (statut Livrée).");
+      showWarning("L'encaissement par le livreur ne peut être validé que si la livraison est confirmée (statut Livrée).");
       return;
     }
 
@@ -123,9 +127,9 @@ export const DriverDashboard: React.FC = () => {
       });
       stopGpsTracking();
       loadDriverData();
-      alert(`Paiement de ${order.totalAmount.toFixed(2)} DT encaissé avec succès.`);
+      showSuccess(`Paiement de ${order.totalAmount.toFixed(2)} DT encaissé avec succès.`);
     } catch (err: any) {
-      alert(err.message || 'Erreur encaissement');
+      showError(err.message || 'Erreur encaissement');
     }
   };
 
@@ -182,14 +186,21 @@ export const DriverDashboard: React.FC = () => {
   // Real Browser Geolocation Activation
   const handleToggleRealGps = (orderId: string) => {
     if (!navigator.geolocation) {
-      alert('La géolocalisation n est pas supportée par ce navigateur.');
+      showWarning("La géolocalisation n'est pas supportée par ce navigateur.");
+      return;
+    }
+
+    if (activeMission.orderStatus !== 'delivering') {
+      showWarning("Veuillez d'abord cliquer sur « Démarrer la livraison » pour activer la télémétrie GPS.");
       return;
     }
 
     if (realGpsActive) {
       stopGpsTracking();
+      showInfo('Suivi GPS réel désactivé.');
     } else {
       setRealGpsActive(true);
+      showSuccess('Transmission GPS réelle activée.');
       watchIdRef.current = navigator.geolocation.watchPosition(
         async pos => {
           const { latitude, longitude, accuracy, heading, speed } = pos.coords;
@@ -210,7 +221,7 @@ export const DriverDashboard: React.FC = () => {
         },
         err => {
           console.error(err);
-          alert('Impossible d accéder au GPS réel. Activation du mode simulation.');
+          showInfo('Impossible d accéder au GPS réel. Activation du mode simulation.');
           startGpsTracking(orderId);
         },
         { enableHighAccuracy: true, maximumAge: 5000, timeout: 10000 }
@@ -366,8 +377,17 @@ export const DriverDashboard: React.FC = () => {
               <button
                 type="button"
                 onClick={() => {
-                  if (isSimulatingGps) stopGpsTracking();
-                  else startGpsTracking(activeMission.id);
+                  if (isSimulatingGps) {
+                    stopGpsTracking();
+                    showInfo('Simulation GPS arrêtée.');
+                  } else {
+                    if (activeMission.orderStatus !== 'delivering') {
+                      showWarning("Veuillez d'abord cliquer sur « Démarrer la livraison » pour lancer la simulation GPS.");
+                      return;
+                    }
+                    startGpsTracking(activeMission.id);
+                    showSuccess('Simulation GPS active le long de l\'itinéraire.');
+                  }
                 }}
                 className={`flex-1 py-2 px-3 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer ${
                   isSimulatingGps

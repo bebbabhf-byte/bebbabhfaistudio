@@ -234,7 +234,15 @@ export async function updateOrderStatus(
   const res = await apiFetch(`${API_BASE}/orders/${id}/status`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ status, details, performedBy })
+    body: JSON.stringify({
+      status,
+      nextStatus: status,
+      details,
+      performedBy,
+      performedByUserId: performedBy?.id,
+      performedByName: performedBy?.name || details,
+      performedByRole: performedBy?.role
+    })
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: 'Erreur mise à jour statut' }));

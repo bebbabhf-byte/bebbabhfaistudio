@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { User, UserRole } from '../../types';
 import { fetchUsers, createUser, updateUser, deleteUser } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
+import { useToast } from '../../context/ToastContext';
 import {
   Users,
   Plus,
@@ -24,6 +25,7 @@ import {
 
 export const UsersTab: React.FC = () => {
   const { currentUser } = useAuth();
+  const { showSuccess, showError, showWarning } = useToast();
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -132,16 +134,17 @@ export const UsersTab: React.FC = () => {
 
   const handleDeactivate = async (user: User) => {
     if (user.id === currentUser.id) {
-      alert('Vous ne pouvez pas désactiver votre propre compte Super Admin.');
+      showWarning('Vous ne pouvez pas désactiver votre propre compte Super Admin.');
       return;
     }
     if (!confirm(`Confirmer la désactivation du compte de ${user.name} ?`)) return;
 
     try {
       await deleteUser(user.id);
+      showSuccess(`Compte de ${user.name} désactivé avec succès.`);
       loadUsersList();
     } catch (e: any) {
-      alert(e.message || 'Erreur désactivation');
+      showError(e.message || 'Erreur désactivation');
     }
   };
 

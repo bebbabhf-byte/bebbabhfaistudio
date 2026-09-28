@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { ClientProfile, Order, Claim } from '../../types';
 import { fetchClients, fetchClientById, updateClientStatus } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
+import { useToast } from '../../context/ToastContext';
 import {
   Users,
   Search,
@@ -20,6 +21,7 @@ import {
 
 export const ClientsTab: React.FC = () => {
   const { currentUser } = useAuth();
+  const { showSuccess, showError } = useToast();
   const [clients, setClients] = useState<ClientProfile[]>([]);
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
@@ -64,8 +66,9 @@ export const ClientsTab: React.FC = () => {
       if (selectedClient && selectedClient.id === clientId) {
         setSelectedClient({ ...selectedClient, status: nextStatus as any });
       }
+      showSuccess(`Statut client mis à jour : ${nextStatus === 'active' ? 'Actif' : 'Suspendu'}`);
     } catch (e: any) {
-      alert(e.message || 'Erreur mise à jour statut');
+      showError(e.message || 'Erreur mise à jour statut client');
     }
   };
 

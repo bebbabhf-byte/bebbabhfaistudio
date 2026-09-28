@@ -20,7 +20,9 @@ import {
   AlertTriangle,
   CheckCircle2,
   TrendingDown,
-  BookOpen
+  BookOpen,
+  X,
+  Loader2
 } from 'lucide-react';
 import { AIRecipesSection } from './AIRecipesSection';
 
@@ -31,6 +33,9 @@ export const KDSBoard: React.FC = () => {
   const [recipes, setRecipes] = useState<Recipe[]>([]);
   const [activeTab, setActiveTab] = useState<'board' | 'stocks' | 'recipes' | 'ai_recipes'>('board');
   const [loading, setLoading] = useState(true);
+  const [processingOrderId, setProcessingOrderId] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionSuccess, setActionSuccess] = useState<string | null>(null);
 
   // Read-only stock filters
   const [stockSearch, setStockSearch] = useState('');
@@ -60,28 +65,44 @@ export const KDSBoard: React.FC = () => {
   };
 
   const handleStartPreparation = async (orderId: string) => {
+    setActionError(null);
+    setActionSuccess(null);
+    setProcessingOrderId(orderId);
     try {
       await updateOrderStatus(orderId, 'preparing', {
         id: currentUser.id,
         name: currentUser.name,
         role: 'kitchen'
       });
-      loadKDS();
+      setActionSuccess('Préparation commencée avec succès ! Les ingrédients ont été déstockés.');
+      await loadKDS();
+      setTimeout(() => setActionSuccess(null), 5000);
     } catch (err: any) {
-      alert(err.message || 'Erreur');
+      console.error('KDS start preparation error:', err);
+      setActionError(err.message || 'Erreur lors du démarrage de la préparation.');
+    } finally {
+      setProcessingOrderId(null);
     }
   };
 
   const handleMarkReady = async (orderId: string) => {
+    setActionError(null);
+    setActionSuccess(null);
+    setProcessingOrderId(orderId);
     try {
       await updateOrderStatus(orderId, 'ready', {
         id: currentUser.id,
         name: currentUser.name,
         role: 'kitchen'
       });
-      loadKDS();
+      setActionSuccess('Commande déclarée prête ! En attente d enlèvement par le livreur.');
+      await loadKDS();
+      setTimeout(() => setActionSuccess(null), 5000);
     } catch (err: any) {
-      alert(err.message || 'Erreur');
+      console.error('KDS mark ready error:', err);
+      setActionError(err.message || 'Erreur lors de la déclaration de commande prête.');
+    } finally {
+      setProcessingOrderId(null);
     }
   };
 
@@ -192,6 +213,42 @@ export const KDSBoard: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {/* Action Error / Success Feedback Banners */}
+      {actionError && (
+        <div className="mb-6 p-4 rounded-2xl bg-rose-50 border-2 border-rose-300 flex items-start justify-between gap-3 text-rose-900 shadow-sm animate-in fade-in duration-200">
+          <div className="flex items-start gap-3">
+            <AlertCircle className="w-5 h-5 text-rose-600 mt-0.5 shrink-0" />
+            <div>
+              <div className="font-bold text-sm">Action bloquée</div>
+              <p className="text-xs text-rose-700 mt-0.5 leading-relaxed">{actionError}</p>
+            </div>
+          </div>
+          <button
+            onClick={() => setActionError(null)}
+            className="p-1.5 rounded-lg hover:bg-rose-100 text-rose-500 hover:text-rose-800 transition cursor-pointer"
+            title="Fermer"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
+      {actionSuccess && (
+        <div className="mb-6 p-4 rounded-2xl bg-emerald-50 border-2 border-emerald-300 flex items-center justify-between gap-3 text-emerald-900 shadow-sm animate-in fade-in duration-200">
+          <div className="flex items-center gap-3">
+            <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
+            <p className="text-xs font-bold text-emerald-800">{actionSuccess}</p>
+          </div>
+          <button
+            onClick={() => setActionSuccess(null)}
+            className="p-1.5 rounded-lg hover:bg-emerald-100 text-emerald-600 hover:text-emerald-900 transition cursor-pointer"
+            title="Fermer"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
 
       {/* ========================================== */}
       {/* TAB 1: STOCKS & INGREDIENTS (READ ONLY) */}
@@ -507,10 +564,24 @@ export const KDSBoard: React.FC = () => {
 
                       <button
                         onClick={() => handleStartPreparation(order.id)}
-                        className="w-full bg-rose-600 hover:bg-rose-700 text-white font-bold py-2.5 px-3 rounded-xl text-xs flex items-center justify-center gap-1.5 shadow-xs transition cursor-pointer"
+                        disabled={processingOrderId === order.id}
+                        className={`w-full font-bold py-2.5 px-3 rounded-xl text-xs flex items-center justify-center gap-1.5 shadow-xs transition ${
+                          processingOrderId === order.id
+                            ? 'bg-rose-400 text-white cursor-not-allowed'
+                            : 'bg-rose-600 hover:bg-rose-700 text-white cursor-pointer active:scale-95'
+                        }`}
                       >
-                        <Play className="w-3.5 h-3.5" />
-                        Commencer Préparation
+                        {processingOrderId === order.id ? (
+                          <>
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            <span>Démarrage en cours...</span>
+                          </>
+                        ) : (
+                          <>
+                            <Play className="w-3.5 h-3.5" />
+                            <span>Commencer Préparation</span>
+                          </>
+                        )}
                       </button>
                     </div>
                   );
@@ -584,10 +655,24 @@ export const KDSBoard: React.FC = () => {
 
                       <button
                         onClick={() => handleMarkReady(order.id)}
-                        className="w-full bg-amber-600 hover:bg-amber-700 text-white font-bold py-2.5 px-3 rounded-xl text-xs flex items-center justify-center gap-1.5 shadow-xs transition cursor-pointer"
+                        disabled={processingOrderId === order.id}
+                        className={`w-full font-bold py-2.5 px-3 rounded-xl text-xs flex items-center justify-center gap-1.5 shadow-xs transition ${
+                          processingOrderId === order.id
+                            ? 'bg-amber-400 text-white cursor-not-allowed'
+                            : 'bg-amber-600 hover:bg-amber-700 text-white cursor-pointer active:scale-95'
+                        }`}
                       >
-                        <CheckCircle className="w-3.5 h-3.5" />
-                        Déclarer Prête (Prêt à l expédition)
+                        {processingOrderId === order.id ? (
+                          <>
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            <span>Mise à disposition...</span>
+                          </>
+                        ) : (
+                          <>
+                            <CheckCircle className="w-3.5 h-3.5" />
+                            <span>Déclarer Prête (Prêt à l expédition)</span>
+                          </>
+                        )}
                       </button>
                     </div>
                   );

@@ -508,6 +508,120 @@ export const INITIAL_RECIPES: Recipe[] = [
       { ingredientId: 'ing_avocat', ingredientName: 'Avocat Hass', quantity: 0.5, unit: 'pièce' },
       { ingredientId: 'ing_huile_olive', ingredientName: 'Huile d olive', quantity: 0.008, unit: 'L' }
     ]
+  },
+  {
+    id: 'rec_healthy_salade_feta',
+    productId: 'prod_healthy_2',
+    productName: 'Salade Méditerranéenne Detox & Feta AOP',
+    ingredients: [
+      { ingredientId: 'ing_feta', ingredientName: 'Feta grecque AOP', quantity: 0.08, unit: 'kg' },
+      { ingredientId: 'ing_epinards', ingredientName: 'Pousses d épinards fraîches', quantity: 0.12, unit: 'kg' },
+      { ingredientId: 'ing_huile_olive', ingredientName: 'Huile d olive extra vierge pressée à froid', quantity: 0.015, unit: 'L' },
+      { ingredientId: 'ing_epices', ingredientName: 'Mélange d herbes et épices maison', quantity: 0.005, unit: 'kg' }
+    ]
+  },
+  {
+    id: 'rec_healthy_tofu_bowl',
+    productId: 'prod_healthy_3',
+    productName: 'Power Bowl Tofu Bio & Patates Douces Rôties',
+    ingredients: [
+      { ingredientId: 'ing_tofu', ingredientName: 'Tofu bio nature', quantity: 0.15, unit: 'kg' },
+      { ingredientId: 'ing_legumes_rotis', ingredientName: 'Mélange légumes maraîchers (courgette/carotte)', quantity: 0.15, unit: 'kg' },
+      { ingredientId: 'ing_huile_olive', ingredientName: 'Huile d olive extra vierge pressée à froid', quantity: 0.01, unit: 'L' },
+      { ingredientId: 'ing_epices', ingredientName: 'Mélange d herbes et épices maison', quantity: 0.005, unit: 'kg' }
+    ]
+  },
+  {
+    id: 'rec_grill_boeuf',
+    productId: 'prod_grill_2',
+    productName: 'Brochettes de Filet de Bœuf Maigre & Riz Complet',
+    ingredients: [
+      { ingredientId: 'ing_boeuf', ingredientName: 'Filet de bœuf maigre', quantity: 0.22, unit: 'kg' },
+      { ingredientId: 'ing_riz', ingredientName: 'Riz complet basmati', quantity: 0.12, unit: 'kg' },
+      { ingredientId: 'ing_huile_olive', ingredientName: 'Huile d olive extra vierge pressée à froid', quantity: 0.01, unit: 'L' },
+      { ingredientId: 'ing_epices', ingredientName: 'Mélange d herbes et épices maison', quantity: 0.005, unit: 'kg' }
+    ]
+  },
+  {
+    id: 'rec_grill_dinde',
+    productId: 'prod_grill_3',
+    productName: 'Pavé de Dinde Grillée Sauce Moutarde à l Ancienne & Épinards',
+    ingredients: [
+      { ingredientId: 'ing_dinde', ingredientName: 'Escalope de dinde fraîche', quantity: 0.22, unit: 'kg' },
+      { ingredientId: 'ing_epinards', ingredientName: 'Pousses d épinards fraîches', quantity: 0.15, unit: 'kg' },
+      { ingredientId: 'ing_huile_olive', ingredientName: 'Huile d olive extra vierge pressée à froid', quantity: 0.01, unit: 'L' },
+      { ingredientId: 'ing_epices', ingredientName: 'Mélange d herbes et épices maison', quantity: 0.005, unit: 'kg' }
+    ]
+  },
+  {
+    id: 'rec_kids_carotte',
+    productId: 'prod_kids_1',
+    productName: 'Mini Bowl P tits Champions & Purée Carotte Maison',
+    ingredients: [
+      { ingredientId: 'ing_poulet', ingredientName: 'Blanc de poulet fermier', quantity: 0.12, unit: 'kg' },
+      { ingredientId: 'ing_legumes_rotis', ingredientName: 'Mélange légumes maraîchers (courgette/carotte)', quantity: 0.15, unit: 'kg' },
+      { ingredientId: 'ing_huile_olive', ingredientName: 'Huile d olive extra vierge pressée à froid', quantity: 0.005, unit: 'L' }
+    ]
+  },
+  {
+    id: 'rec_kids_nuggets',
+    productId: 'prod_kids_2',
+    productName: 'Nuggets Sains au Four & Frites de Patate Douce',
+    ingredients: [
+      { ingredientId: 'ing_poulet', ingredientName: 'Blanc de poulet fermier', quantity: 0.15, unit: 'kg' },
+      { ingredientId: 'ing_legumes_rotis', ingredientName: 'Mélange légumes maraîchers (courgette/carotte)', quantity: 0.12, unit: 'kg' },
+      { ingredientId: 'ing_huile_olive', ingredientName: 'Huile d olive extra vierge pressée à froid', quantity: 0.005, unit: 'L' }
+    ]
+  },
+  {
+    id: 'rec_juice_green',
+    productId: 'prod_juice_1',
+    productName: 'Green Booster Détox (350ml)',
+    ingredients: [
+      { ingredientId: 'ing_epinards', ingredientName: 'Pousses d épinards fraîches', quantity: 0.15, unit: 'kg' },
+      { ingredientId: 'ing_legumes_rotis', ingredientName: 'Mélange légumes maraîchers (courgette/carotte)', quantity: 0.10, unit: 'kg' },
+      { ingredientId: 'ing_huile_olive', ingredientName: 'Huile d olive extra vierge pressée à froid', quantity: 0.002, unit: 'L' }
+    ]
+  },
+  {
+    id: 'rec_juice_red',
+    productId: 'prod_juice_2',
+    productName: 'Red Glow Antioxydant (350ml)',
+    ingredients: [
+      { ingredientId: 'ing_legumes_rotis', ingredientName: 'Mélange légumes maraîchers (courgette/carotte)', quantity: 0.20, unit: 'kg' },
+      { ingredientId: 'ing_epices', ingredientName: 'Mélange d herbes et épices maison', quantity: 0.003, unit: 'kg' }
+    ]
+  },
+  {
+    id: 'rec_juice_sunrise',
+    productId: 'prod_juice_3',
+    productName: 'Sunrise Citrus & Curcuma Vitalité (350ml)',
+    ingredients: [
+      { ingredientId: 'ing_epices', ingredientName: 'Mélange d herbes et épices maison', quantity: 0.01, unit: 'kg' },
+      { ingredientId: 'ing_huile_olive', ingredientName: 'Huile d olive extra vierge pressée à froid', quantity: 0.002, unit: 'L' }
+    ]
+  },
+  {
+    id: 'rec_program_detox',
+    productId: 'prod_program_1',
+    productName: 'Programme Détox & Équilibre Vital (30 Jours)',
+    ingredients: [
+      { ingredientId: 'ing_poulet', ingredientName: 'Blanc de poulet fermier', quantity: 0.20, unit: 'kg' },
+      { ingredientId: 'ing_riz', ingredientName: 'Riz complet basmati', quantity: 0.10, unit: 'kg' },
+      { ingredientId: 'ing_legumes_rotis', ingredientName: 'Mélange légumes maraîchers (courgette/carotte)', quantity: 0.15, unit: 'kg' },
+      { ingredientId: 'ing_huile_olive', ingredientName: 'Huile d olive extra vierge pressée à froid', quantity: 0.01, unit: 'L' }
+    ]
+  },
+  {
+    id: 'rec_program_masse',
+    productId: 'prod_program_2',
+    productName: 'Programme Sèche & Masse Musculaire Pro (30 Jours)',
+    ingredients: [
+      { ingredientId: 'ing_boeuf', ingredientName: 'Filet de bœuf maigre', quantity: 0.25, unit: 'kg' },
+      { ingredientId: 'ing_riz', ingredientName: 'Riz complet basmati', quantity: 0.12, unit: 'kg' },
+      { ingredientId: 'ing_epinards', ingredientName: 'Pousses d épinards fraîches', quantity: 0.10, unit: 'kg' },
+      { ingredientId: 'ing_huile_olive', ingredientName: 'Huile d olive extra vierge pressée à froid', quantity: 0.01, unit: 'L' }
+    ]
   }
 ];
 

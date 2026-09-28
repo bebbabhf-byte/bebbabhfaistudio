@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Order, DriverProfile } from '../../types';
 import { cancelOrder, reassignDriver } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
+import { useToast } from '../../context/ToastContext';
 import { AlertTriangle, Bike, X, RotateCcw, CheckCircle } from 'lucide-react';
 
 interface CancelOrderModalProps {
@@ -12,6 +13,7 @@ interface CancelOrderModalProps {
 
 export const CancelOrderModal: React.FC<CancelOrderModalProps> = ({ order, onClose, onSuccess }) => {
   const { currentUser } = useAuth();
+  const { showSuccess, showError } = useToast();
   const [reason, setReason] = useState('Client indisponible / Annulation demandée');
   const [submitting, setSubmitting] = useState(false);
 
@@ -33,10 +35,11 @@ export const CancelOrderModal: React.FC<CancelOrderModalProps> = ({ order, onClo
         name: currentUser.name,
         role: currentUser.role
       });
+      showSuccess(`Commande ${order.orderNumber} annulée avec succès.`);
       onSuccess();
       onClose();
     } catch (err: any) {
-      alert(err.message || 'Erreur lors de l annulation');
+      showError(err.message || 'Erreur lors de l annulation');
     } finally {
       setSubmitting(false);
     }
@@ -144,6 +147,7 @@ export const ReassignDriverModal: React.FC<ReassignDriverModalProps> = ({
   onSuccess
 }) => {
   const { currentUser } = useAuth();
+  const { showSuccess, showError } = useToast();
   const [selectedDriverId, setSelectedDriverId] = useState('');
   const [reason, setReason] = useState('Optimisation de tournée / livreur indisponible');
   const [submitting, setSubmitting] = useState(false);
@@ -162,10 +166,11 @@ export const ReassignDriverModal: React.FC<ReassignDriverModalProps> = ({
         id: currentUser.id,
         name: currentUser.name
       });
+      showSuccess(`Commande ${order.orderNumber} réaffectée avec succès.`);
       onSuccess();
       onClose();
     } catch (err: any) {
-      alert(err.message || 'Erreur lors de la réaffectation');
+      showError(err.message || 'Erreur lors de la réaffectation');
     } finally {
       setSubmitting(false);
     }

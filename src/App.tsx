@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { CartProvider } from './context/CartContext';
 import { FavoritesProvider, useFavorites } from './context/FavoritesContext';
+import { ToastProvider } from './context/ToastContext';
 import { Navbar } from './components/Navbar';
 import { MenuCatalog } from './components/ClientView/MenuCatalog';
 import { CartDrawer } from './components/ClientView/CartDrawer';
@@ -11,6 +12,7 @@ import { ClientOrdersView } from './components/ClientView/ClientOrdersView';
 import { KDSBoard } from './components/KDSView/KDSBoard';
 import { DriverDashboard } from './components/DriverView/DriverDashboard';
 import { AdminDashboard } from './components/AdminView/AdminDashboard';
+import { Footer } from './components/Footer';
 import { Order } from './types';
 import { Heart } from 'lucide-react';
 
@@ -95,30 +97,20 @@ function MainApp() {
       )}
 
       {/* Footer */}
-      <footer className="bg-white border-t border-stone-200 py-6 text-center text-xs text-stone-500">
-        <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
-            <span className="font-bold text-stone-800">BEBBA Healthy Food</span>
-            <span>—</span>
-            <span className="italic">« Vos Plats santé en un clic »</span>
-          </div>
-          <div className="text-stone-400">
-            Grand Tunis • Paiement à la livraison (COD) • Google Maps Live GPS
-          </div>
-        </div>
-      </footer>
+      <Footer setCurrentTab={setCurrentTab} />
     </div>
   );
 }
-
 export default function App() {
   return (
-    <AuthProvider>
-      <CartProvider>
-        <FavoritesProvider>
-          <MainApp />
-        </FavoritesProvider>
-      </CartProvider>
-    </AuthProvider>
+    <ToastProvider>
+      <AuthProvider>
+        <CartProvider>
+          <FavoritesProvider>
+            <MainApp />
+          </FavoritesProvider>
+        </CartProvider>
+      </AuthProvider>
+    </ToastProvider>
   );
 }

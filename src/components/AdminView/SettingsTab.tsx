@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { AppSettings, Promotion } from '../../types';
 import { fetchSettings, updateSettings, downloadBackup, restoreBackup, fetchPromotions } from '../../services/api';
+import { useToast } from '../../context/ToastContext';
 import {
   Settings,
   DollarSign,
@@ -21,6 +22,7 @@ import {
 } from 'lucide-react';
 
 export const SettingsTab: React.FC = () => {
+  const { showSuccess, showError, showInfo } = useToast();
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [promotions, setPromotions] = useState<Promotion[]>([]);
   const [loading, setLoading] = useState(true);
@@ -53,9 +55,10 @@ export const SettingsTab: React.FC = () => {
     try {
       await updateSettings(settings);
       setSavedMessage(true);
+      showSuccess('Paramètres système mis à jour avec succès.');
       setTimeout(() => setSavedMessage(false), 3000);
     } catch (err: any) {
-      alert(err.message || 'Erreur mise à jour des paramètres');
+      showError(err.message || 'Erreur mise à jour des paramètres');
     }
   };
 
@@ -321,8 +324,9 @@ export const SettingsTab: React.FC = () => {
                   document.body.appendChild(dlAnchor);
                   dlAnchor.click();
                   dlAnchor.remove();
+                  showSuccess('Sauvegarde complète exportée en JSON.');
                 } catch (e: any) {
-                  alert(e.message || 'Erreur lors du téléchargement du backup');
+                  showError(e.message || 'Erreur lors du téléchargement du backup');
                 }
               }}
               className="px-4 py-2.5 rounded-xl bg-stone-900 hover:bg-black text-white text-xs font-bold flex items-center gap-2 transition"
@@ -349,10 +353,10 @@ export const SettingsTab: React.FC = () => {
                         return;
                       }
                       await restoreBackup(json);
-                      alert('Sauvegarde restaurée avec succès ! La page va s actualiser.');
-                      window.location.reload();
+                      showSuccess('Sauvegarde restaurée avec succès ! Actualisation...');
+                      setTimeout(() => window.location.reload(), 1000);
                     } catch (err: any) {
-                      alert('Fichier invalide : ' + (err.message || 'Format JSON incorrect'));
+                      showError('Fichier invalide : ' + (err.message || 'Format JSON incorrect'));
                     }
                   };
                   reader.readAsText(file);

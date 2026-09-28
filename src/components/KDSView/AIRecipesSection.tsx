@@ -1,6 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { Ingredient, AIMenuRecipe } from '../../types';
 import { generateAIRecipes, generateDishImageFromPrompt, addRecipeToMenu } from '../../services/api';
+import { useToast } from '../../context/ToastContext';
 import {
   Sparkles,
   ChefHat,
@@ -36,6 +37,7 @@ interface AIRecipesSectionProps {
 }
 
 export const AIRecipesSection: React.FC<AIRecipesSectionProps> = ({ ingredients }) => {
+  const { showSuccess, showError, showWarning } = useToast();
   const [mode, setMode] = useState<'all_stock' | 'selected_ingredients'>('all_stock');
   const [selectedIngredientIds, setSelectedIngredientIds] = useState<string[]>([]);
   const [ingredientSearch, setIngredientSearch] = useState('');
@@ -104,7 +106,7 @@ export const AIRecipesSection: React.FC<AIRecipesSectionProps> = ({ ingredients 
   // Trigger AI generation
   const handleGenerate = async () => {
     if (mode === 'selected_ingredients' && selectedIngredientIds.length === 0) {
-      alert('Veuillez cocher au moins un ingrédient dans la liste ci-dessous.');
+      showWarning('Veuillez cocher au moins un ingrédient dans la liste ci-dessous.');
       return;
     }
 
@@ -124,9 +126,10 @@ export const AIRecipesSection: React.FC<AIRecipesSectionProps> = ({ ingredients 
           count: result.recipes.length,
           date: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
         });
+        showSuccess(`${result.recipes.length} recettes saines générées avec succès !`);
       }
     } catch (err: any) {
-      alert(err.message || 'Erreur lors de la génération des recettes');
+      showError(err.message || 'Erreur lors de la génération des recettes');
     } finally {
       setIsGenerating(false);
     }
@@ -183,9 +186,10 @@ ${recipe.healthBenefits.map(b => `✓ ${b}`).join('\n')}
               : r
           )
         );
+        showSuccess('Image culinaire régénérée avec succès.');
       }
     } catch (err: any) {
-      alert(err.message || 'Erreur lors de la régénération de l\'image');
+      showError(err.message || 'Erreur lors de la régénération de l\'image');
     } finally {
       setGeneratingImageForId(null);
     }
@@ -233,12 +237,14 @@ ${recipe.healthBenefits.map(b => `✓ ${b}`).join('\n')}
           prev.filter(id => !recipesToAdd.some(r => r.id === id))
         );
         const forcedMention = force ? ' avec la mention (2) ajoutée au titre' : '';
-        setSuccessFeedback(res.message ? `${res.message}${forcedMention}` : `${recipesToAdd.length} plat(s) ajouté(s) à la carte avec succès${forcedMention} !`);
+        const msg = res.message ? `${res.message}${forcedMention}` : `${recipesToAdd.length} plat(s) ajouté(s) à la carte avec succès${forcedMention} !`;
+        setSuccessFeedback(msg);
+        showSuccess(msg);
         setTimeout(() => setSuccessFeedback(null), 5000);
         window.dispatchEvent(new CustomEvent('menu_updated'));
       }
     } catch (err: any) {
-      alert(err.message || 'Erreur lors de l\'ajout à la carte');
+      showError(err.message || 'Erreur lors de l\'ajout à la carte');
     } finally {
       setIsAddingToMenu(false);
     }

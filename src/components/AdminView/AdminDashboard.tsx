@@ -24,6 +24,7 @@ import {
   collectPayment
 } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
+import { useToast } from '../../context/ToastContext';
 import {
   ShieldCheck,
   Package,
@@ -96,6 +97,7 @@ export type AdminTab =
 
 export const AdminDashboard: React.FC = () => {
   const { currentUser } = useAuth();
+  const { showSuccess, showError, showInfo } = useToast();
   const [activeTab, setActiveTab] = useState<AdminTab>('orders');
 
   const [orders, setOrders] = useState<Order[]>([]);
@@ -212,11 +214,12 @@ export const AdminDashboard: React.FC = () => {
         id: currentUser.id,
         name: currentUser.name
       });
+      showSuccess(`Commande ${orderToAssign.orderNumber} affectée au livreur.`);
       setOrderToAssign(null);
       setSelectedDriverId('');
       loadAllAdminData();
     } catch (err: any) {
-      alert(err.message || 'Erreur affectation');
+      showError(err.message || 'Erreur affectation livreur');
     }
   };
 
@@ -231,10 +234,11 @@ export const AdminDashboard: React.FC = () => {
         senderRole: 'admin',
         message: claimReplyText.trim()
       });
+      showSuccess('Réponse envoyée au client.');
       setClaimReplyText('');
       loadAllAdminData();
     } catch (err: any) {
-      alert(err.message || 'Erreur envoi réponse');
+      showError(err.message || 'Erreur envoi réponse');
     }
   };
 
@@ -249,9 +253,9 @@ export const AdminDashboard: React.FC = () => {
         adminId: currentUser.id
       });
       loadAllAdminData();
-      alert(`Réclamation ${selectedClaim.claimNumber} mise à jour avec succès.`);
+      showSuccess(`Réclamation ${selectedClaim.claimNumber} mise à jour avec succès.`);
     } catch (err: any) {
-      alert(err.message || 'Erreur mise à jour réclamation');
+      showError(err.message || 'Erreur mise à jour réclamation');
     }
   };
 
@@ -267,10 +271,11 @@ export const AdminDashboard: React.FC = () => {
         reason: 'Réapprovisionnement fournisseur direct',
         performedBy: currentUser.name
       });
+      showSuccess(`Réapprovisionnement enregistré (+${restockQuantity} ${restockIngredient.unit}).`);
       setRestockIngredient(null);
       loadAllAdminData();
     } catch (err: any) {
-      alert(err.message || 'Erreur restock');
+      showError(err.message || 'Erreur restock');
     }
   };
 

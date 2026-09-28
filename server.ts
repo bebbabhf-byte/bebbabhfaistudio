@@ -365,6 +365,7 @@ function isValidNumber(val: any, options: { min?: number; max?: number; allowZer
 
 interface StockRequirementCheck {
   sufficient: boolean;
+  error?: string;
   missing: Array<{
     ingredientId: string;
     ingredientName: string;
@@ -374,17 +375,45 @@ interface StockRequirementCheck {
   }>;
 }
 
-// Calculate total required ingredients for an entire order and compare against available stock (§4)
+// 2. Moteur de calcul du stock : refuse silencieusement toute recette manquante ou ingrédient absent (§4)
 function calculateOrderStockRequirements(order: Order): StockRequirementCheck {
   const aggregatedNeeded = new Map<string, { ingredient: Ingredient; required: number }>();
 
   for (const item of order.items) {
-    const recipe = db.recipes.find(r => r.productId === item.productId);
-    if (!recipe) continue;
+    const product = db.products.find(p => p.id === item.productId);
+    const recipe = db.recipes.find(r => r.productId === item.productId || (product && product.recipeId && r.id === product.recipeId));
+
+    if (!recipe) {
+      return {
+        sufficient: false,
+        error: `Recette manquante ou introuvable pour le produit "${item.productName || (product ? product.name : item.productId)}". Préparation bloquée.`,
+        missing: []
+      };
+    }
+
+    if (!recipe.ingredients || !Array.isArray(recipe.ingredients) || recipe.ingredients.length === 0) {
+      return {
+        sufficient: false,
+        error: `La recette pour le produit "${item.productName || (product ? product.name : item.productId)}" est vide ou incohérente. Préparation bloquée.`,
+        missing: []
+      };
+    }
 
     for (const recIng of recipe.ingredients) {
       const ing = db.ingredients.find(i => i.id === recIng.ingredientId);
-      if (!ing) continue;
+      if (!ing) {
+        return {
+          sufficient: false,
+          error: `Ingrédient manquant dans le stock : "${recIng.ingredientName || recIng.ingredientId}" (référencé par la recette de "${item.productName || (product ? product.name : item.productId)}"). Préparation bloquée sans déduction partielle.`,
+          missing: [{
+            ingredientId: recIng.ingredientId,
+            ingredientName: recIng.ingredientName || recIng.ingredientId,
+            required: recIng.quantity * item.quantity,
+            available: 0,
+            unit: recIng.unit || 'g'
+          }]
+        };
+      }
 
       const needed = recIng.quantity * item.quantity;
       const current = aggregatedNeeded.get(ing.id);
@@ -410,9 +439,20 @@ function calculateOrderStockRequirements(order: Order): StockRequirementCheck {
     }
   }
 
+  if (missing.length > 0) {
+    const missingDesc = missing
+      .map(m => `${m.ingredientName} (requis : ${m.required} ${m.unit}, dispo : ${m.available} ${m.unit})`)
+      .join(', ');
+    return {
+      sufficient: false,
+      error: `Stock insuffisant pour préparer la commande : ${missingDesc}`,
+      missing
+    };
+  }
+
   return {
-    sufficient: missing.length === 0,
-    missing
+    sufficient: true,
+    missing: []
   };
 }
 
@@ -423,36 +463,34 @@ function consumeIngredientsForOrder(order: Order, performedBy: string): { succes
     return { success: true };
   }
 
-  // Vérifier la disponibilité réelle de tous les ingrédients AVANT toute déduction
+  // Vérifier la disponibilité réelle de TOUS les ingrédients et recettes AVANT toute déduction
   const check = calculateOrderStockRequirements(order);
   if (!check.sufficient) {
-    const missingDesc = check.missing
-      .map(m => `${m.ingredientName} (requis : ${m.required} ${m.unit}, dispo : ${m.available} ${m.unit})`)
-      .join(', ');
+    const errorMsg = check.error || 'Stock insuffisant ou recette manquante pour débuter la préparation.';
 
-    // Signaler clairement le manque de stock sans déduction partielle ni mise à zéro
+    // Notifier immédiatement la cuisine
     createNotification(
       'STOCK_ALERT',
-      `Stock insuffisant pour ${order.orderNumber}`,
-      `Ingrédients manquants : ${missingDesc}`,
-      'kitchen'
+      `Préparation bloquée pour ${order.orderNumber}`,
+      errorMsg,
+      'kitchen',
+      { orderId: order.id }
     );
 
     return {
       success: false,
-      error: `Stock insuffisant pour préparer la commande : ${missingDesc}`,
+      error: errorMsg,
       missing: check.missing
     };
   }
 
-  // Stock suffisant : déduire les quantités réelles de manière cohérente
+  // Stock et recettes vérifiés à 100% : déduire les quantités réelles sans déduction partielle ni incohérence
   for (const item of order.items) {
-    const recipe = db.recipes.find(r => r.productId === item.productId);
-    if (!recipe) continue;
+    const product = db.products.find(p => p.id === item.productId);
+    const recipe = db.recipes.find(r => r.productId === item.productId || (product && product.recipeId && r.id === product.recipeId))!;
 
     for (const recIng of recipe.ingredients) {
-      const ing = db.ingredients.find(i => i.id === recIng.ingredientId);
-      if (!ing) continue;
+      const ing = db.ingredients.find(i => i.id === recIng.ingredientId)!;
 
       const totalDeduction = parseFloat((recIng.quantity * item.quantity).toFixed(3));
       const before = ing.currentStock;
@@ -500,7 +538,8 @@ function restoreIngredientsForCancelledOrder(order: Order, performedBy: string):
   }
 
   for (const item of order.items) {
-    const recipe = db.recipes.find(r => r.productId === item.productId);
+    const product = db.products.find(p => p.id === item.productId);
+    const recipe = db.recipes.find(r => r.productId === item.productId || (product && product.recipeId && r.id === product.recipeId));
     if (!recipe) continue;
 
     for (const recIng of recipe.ingredients) {
@@ -539,19 +578,64 @@ function restoreIngredientsForCancelledOrder(order: Order, performedBy: string):
   return { restored: true };
 }
 
-// Contrôle de la permission READ ONLY sur les Ingrédients (§24, §54, §142, §219, §243)
-function checkIngredientsReadOnly(req: Request, res: Response): boolean {
-  const perm = (
-    req.headers['x-user-permission'] ||
-    req.headers['x-user-role'] ||
-    req.query.permission ||
-    (req.body && req.body.userPermission) ||
-    ''
-  ).toString().toLowerCase();
+// 3. Contrôle universel de la permission READ ONLY en MODE TEST (§24, §54, §142, §219, §243)
+function isReadOnlyRequest(req: Request): boolean {
+  // 1. En-têtes HTTP
+  const headerPerm = (req.headers['x-user-permission'] || req.headers['x-permission'] || '').toString().toLowerCase().trim();
+  const headerRole = (req.headers['x-user-role'] || req.headers['x-role'] || '').toString().toLowerCase().trim();
+  if (['read_only', 'readonly'].includes(headerPerm) || ['read_only', 'readonly'].includes(headerRole)) {
+    return true;
+  }
 
-  if (perm === 'read_only' || perm === 'readonly') {
+  // 2. Paramètres d'URL (query)
+  const queryPerm = (req.query.permission || '').toString().toLowerCase().trim();
+  const queryRole = (req.query.role || '').toString().toLowerCase().trim();
+  if (['read_only', 'readonly'].includes(queryPerm) || ['read_only', 'readonly'].includes(queryRole)) {
+    return true;
+  }
+
+  // 3. Corps de requête (body)
+  if (req.body && typeof req.body === 'object') {
+    const bodyPerm = (req.body.userPermission || req.body.permission || '').toString().toLowerCase().trim();
+    const bodyRole = (req.body.userRole || req.body.role || '').toString().toLowerCase().trim();
+    if (['read_only', 'readonly'].includes(bodyPerm) || ['read_only', 'readonly'].includes(bodyRole)) {
+      return true;
+    }
+    if (req.body.performedBy && typeof req.body.performedBy === 'object') {
+      const perfPerm = (req.body.performedBy.permission || '').toString().toLowerCase().trim();
+      const perfRole = (req.body.performedBy.role || '').toString().toLowerCase().trim();
+      if (['read_only', 'readonly'].includes(perfPerm) || ['read_only', 'readonly'].includes(perfRole)) {
+        return true;
+      }
+    }
+  }
+
+  // 4. Utilisateur rattaché par ID
+  const userId = (
+    req.headers['x-user-id'] ||
+    req.query.userId ||
+    (req.body && (req.body.userId || req.body.performedByUserId || req.body.adminId || req.body.clientId || (req.body.performedBy && req.body.performedBy.id))) ||
+    ''
+  ).toString().trim();
+
+  if (userId) {
+    const user = db.users.find(u => u.id === userId);
+    if (user) {
+      const uRole = (user.role || '').toLowerCase().trim();
+      const uPerm = ((user as any).permission || '').toLowerCase().trim();
+      if (['read_only', 'readonly'].includes(uRole) || ['read_only', 'readonly'].includes(uPerm)) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+function checkIngredientsReadOnly(req: Request, res: Response): boolean {
+  if (isReadOnlyRequest(req)) {
     res.status(403).json({
-      error: 'Action refusée : Vous disposez de la permission READ ONLY (Lecture Seule) sur les ingrédients. Aucune modification de stock, création, mise à jour ou suppression n\'est autorisée (Règles §24, §54, §142).'
+      error: 'Action refusée : Vous disposez de la permission READ ONLY (Lecture Seule) en mode test. Aucune modification de données n\'est autorisée.'
     });
     return true;
   }
@@ -624,9 +708,25 @@ async function startServer() {
   app.use('/api', (req: Request, res: Response, next) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-user-permission, x-user-role, x-user-id, x-permission, x-role');
     if (req.method === 'OPTIONS') {
       return res.sendStatus(204);
+    }
+    next();
+  });
+
+  // 3. Contrôle uniforme de la permission READ ONLY en MODE TEST (§24, §54, §142, §219, §243)
+  app.use('/api', (req: Request, res: Response, next) => {
+    if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) {
+      // Exclure uniquement login et calculs de promotions sans écriture
+      if (req.path === '/auth/login' || req.path === '/promotions/calculate') {
+        return next();
+      }
+      if (isReadOnlyRequest(req)) {
+        return res.status(403).json({
+          error: 'Action refusée : Vous disposez du statut READ ONLY (Lecture Seule) en mode test. Aucune modification de données n\'est autorisée.'
+        });
+      }
     }
     next();
   });
@@ -733,13 +833,18 @@ async function startServer() {
     const { name, description, displayOrder } = req.body;
     if (!name) return res.status(400).json({ error: 'Le nom de la catégorie est requis' });
 
+    // 1. Validation displayOrder
+    if (displayOrder !== undefined && !isValidNumber(displayOrder, { min: 1, integer: true, allowZero: false })) {
+      return res.status(400).json({ error: 'Ordre d\'affichage invalide (doit être un entier supérieur ou égal à 1).' });
+    }
+
     const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
     const newCategory: Category = {
       id: `cat_${Date.now()}`,
       name: name.trim(),
       slug,
       description: description || '',
-      displayOrder: parseInt(displayOrder) || (db.categories.length + 1),
+      displayOrder: displayOrder !== undefined ? parseInt(displayOrder, 10) : (db.categories.length + 1),
       isActive: true
     };
     db.categories.push(newCategory);
@@ -755,7 +860,12 @@ async function startServer() {
     const { name, description, displayOrder, isActive } = req.body;
     if (name) cat.name = name.trim();
     if (description !== undefined) cat.description = description;
-    if (displayOrder !== undefined) cat.displayOrder = parseInt(displayOrder);
+    if (displayOrder !== undefined) {
+      if (!isValidNumber(displayOrder, { min: 1, integer: true, allowZero: false })) {
+        return res.status(400).json({ error: 'Ordre d\'affichage invalide (doit être un entier supérieur ou égal à 1).' });
+      }
+      cat.displayOrder = parseInt(displayOrder, 10);
+    }
     if (isActive !== undefined) cat.isActive = Boolean(isActive);
 
     broadcast('category_updated', cat);
@@ -788,11 +898,25 @@ async function startServer() {
       return res.status(400).json({ error: 'Prix de base invalide (doit être un nombre positif ou nul).' });
     }
 
+    // 1. Validation stricte des valeurs nutritionnelles sans remplacement silencieux
+    if (calories !== undefined && !isValidNumber(calories, { min: 0, allowZero: true, integer: true })) {
+      return res.status(400).json({ error: 'Calories invalides (doit être un nombre entier positif ou nul).' });
+    }
+    if (protein !== undefined && !isValidNumber(protein, { min: 0, allowZero: true, integer: true })) {
+      return res.status(400).json({ error: 'Protéines invalides (doit être un nombre entier positif ou nul).' });
+    }
+    if (carbs !== undefined && !isValidNumber(carbs, { min: 0, allowZero: true, integer: true })) {
+      return res.status(400).json({ error: 'Glucides invalides (doit être un nombre entier positif ou nul).' });
+    }
+    if (fat !== undefined && !isValidNumber(fat, { min: 0, allowZero: true, integer: true })) {
+      return res.status(400).json({ error: 'Lipides invalides (doit être un nombre entier positif ou nul).' });
+    }
+
     const numBasePrice = parseFloat(basePrice);
-    const numCalories = calories !== undefined ? (isValidNumber(calories, { min: 0, allowZero: true, integer: true }) ? parseInt(calories, 10) : 400) : 400;
-    const numProtein = protein !== undefined ? (isValidNumber(protein, { min: 0, allowZero: true, integer: true }) ? parseInt(protein, 10) : 25) : 25;
-    const numCarbs = carbs !== undefined ? (isValidNumber(carbs, { min: 0, allowZero: true, integer: true }) ? parseInt(carbs, 10) : 30) : 30;
-    const numFat = fat !== undefined ? (isValidNumber(fat, { min: 0, allowZero: true, integer: true }) ? parseInt(fat, 10) : 12) : 12;
+    const numCalories = calories !== undefined ? parseInt(calories, 10) : 400;
+    const numProtein = protein !== undefined ? parseInt(protein, 10) : 25;
+    const numCarbs = carbs !== undefined ? parseInt(carbs, 10) : 30;
+    const numFat = fat !== undefined ? parseInt(fat, 10) : 12;
 
     const newProd: Product = {
       id: `prod_${Date.now()}`,
@@ -1127,13 +1251,13 @@ async function startServer() {
         });
       }
 
-      // 8. Validation stricte de la quantité
-      const qty = typeof rawItem.quantity === 'number' ? rawItem.quantity : parseInt(rawItem.quantity, 10);
-      if (!isValidNumber(qty, { integer: true, min: 1, allowZero: false })) {
+      // 1. Validation stricte de la quantité
+      if (!isValidNumber(rawItem.quantity, { integer: true, min: 1, allowZero: false })) {
         return res.status(400).json({
           error: `Quantité invalide pour le produit "${product.name}". La quantité doit être un nombre entier supérieur ou égal à 1.`
         });
       }
+      const qty = Number(rawItem.quantity);
 
       // Le prix doit TOUJOURS provenir du produit réellement enregistré dans le catalogue (ne jamais utiliser un prix client)
       const unitBasePrice = product.basePrice;
@@ -1273,7 +1397,10 @@ async function startServer() {
   // State transitions with strict backend rules & KDS duration timestamps (§28, §29)
   app.patch('/api/orders/:id/status', (req: Request, res: Response) => {
     const { id } = req.params;
-    const { nextStatus, performedByUserId, performedByName, performedByRole } = req.body;
+    const nextStatus = (req.body.nextStatus || req.body.status) as OrderStatus;
+    const performedByUserId = req.body.performedByUserId || req.body.performedBy?.id;
+    const performedByName = req.body.performedByName || req.body.performedBy?.name || req.body.details;
+    const performedByRole = req.body.performedByRole || req.body.performedBy?.role;
 
     const order = db.orders.find(o => o.id === id);
     if (!order) {
@@ -2121,10 +2248,15 @@ async function startServer() {
       return res.status(404).json({ error: 'Ingrédient non trouvé' });
     }
 
-    const delta = typeof quantityDelta === 'number' ? quantityDelta : parseFloat(quantityDelta);
-    if (isNaN(delta) || !isFinite(delta)) {
-      return res.status(400).json({ error: 'Quantité de mouvement invalide.' });
+    // 1. Validation numérique stricte
+    if (!isValidNumber(quantityDelta, { allowZero: false })) {
+      return res.status(400).json({ error: 'Quantité de mouvement invalide (ne peut pas être nulle, NaN ou infinie).' });
     }
+    if (unitCost !== undefined && !isValidNumber(unitCost, { min: 0, allowZero: true })) {
+      return res.status(400).json({ error: 'Coût unitaire invalide (doit être un nombre positif ou nul).' });
+    }
+
+    const delta = typeof quantityDelta === 'number' ? quantityDelta : parseFloat(quantityDelta);
 
     if (delta < 0 && (ing.currentStock + delta) < -0.0001) {
       return res.status(400).json({
@@ -3980,6 +4112,21 @@ Réponds UNIQUEMENT avec le tableau JSON valide de 20 recettes, sans aucun texte
   });
 
   app.put('/api/settings', (req: Request, res: Response) => {
+    const { defaultDeliveryFee, minOrderAmount, stockAlertThresholdDefault, freeDeliveryThreshold } = req.body;
+    // 1. Validation numérique des paramètres
+    if (defaultDeliveryFee !== undefined && !isValidNumber(defaultDeliveryFee, { min: 0, allowZero: true })) {
+      return res.status(400).json({ error: 'Frais de livraison par défaut invalides (doit être un nombre positif ou nul).' });
+    }
+    if (minOrderAmount !== undefined && !isValidNumber(minOrderAmount, { min: 0, allowZero: true })) {
+      return res.status(400).json({ error: 'Montant minimum de commande invalide (doit être un nombre positif ou nul).' });
+    }
+    if (stockAlertThresholdDefault !== undefined && !isValidNumber(stockAlertThresholdDefault, { min: 0, allowZero: true })) {
+      return res.status(400).json({ error: 'Seuil d alerte de stock par défaut invalide (doit être un nombre positif ou nul).' });
+    }
+    if (freeDeliveryThreshold !== undefined && !isValidNumber(freeDeliveryThreshold, { min: 0, allowZero: true })) {
+      return res.status(400).json({ error: 'Seuil de livraison gratuite invalide (doit être un nombre positif ou nul).' });
+    }
+
     db.settings = { ...db.settings, ...req.body };
     logAudit('PARAMETRES_MODIFIES', 'system', { id: 'admin', name: 'Admin', role: 'admin' }, 'Mise à jour des paramètres système BEBBA');
     broadcast('settings_updated', db.settings);

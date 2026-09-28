@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Claim, Order, ClaimType } from '../../types';
 import { fetchClaims, fetchOrders, createClaim, sendClaimMessage } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
+import { useToast } from '../../context/ToastContext';
 import {
   MessageSquareWarning,
   Plus,
@@ -23,6 +24,7 @@ interface CustomerClaimsViewProps {
 
 export const CustomerClaimsView: React.FC<CustomerClaimsViewProps> = ({ initialOrderForClaim }) => {
   const { currentUser } = useAuth();
+  const { showSuccess, showError, showWarning } = useToast();
   const [claims, setClaims] = useState<Claim[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
   const [selectedClaim, setSelectedClaim] = useState<Claim | null>(null);
@@ -122,7 +124,7 @@ export const CustomerClaimsView: React.FC<CustomerClaimsViewProps> = ({ initialO
   const handleCreateClaim = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedOrderId || !claimDescription.trim()) {
-      alert('Veuillez sélectionner une commande et décrire le problème rencontré.');
+      showWarning('Veuillez sélectionner une commande et décrire le problème rencontré.');
       return;
     }
 
@@ -144,8 +146,9 @@ export const CustomerClaimsView: React.FC<CustomerClaimsViewProps> = ({ initialO
       setIsModalOpen(false);
       setClaimDescription('');
       setUploadedPhotos([]);
+      showSuccess(`Réclamation ${newClaim.claimNumber} enregistrée. Notre équipe va la traiter dans les plus brefs délais.`);
     } catch (err: any) {
-      alert(err.message || 'Erreur lors de la création de la réclamation');
+      showError(err.message || 'Erreur lors de la création de la réclamation');
     } finally {
       setIsSubmitting(false);
     }
@@ -168,8 +171,9 @@ export const CustomerClaimsView: React.FC<CustomerClaimsViewProps> = ({ initialO
       setSelectedClaim(prev => (prev ? { ...prev, messages: [...prev.messages, sent] } : null));
       setChatInput('');
       setChatAttachment(null);
+      showSuccess('Message envoyé.');
     } catch (err: any) {
-      alert(err.message || 'Erreur envoi message');
+      showError(err.message || 'Erreur envoi message');
     } finally {
       setIsSendingMessage(false);
     }

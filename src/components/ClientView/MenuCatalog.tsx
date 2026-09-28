@@ -321,7 +321,7 @@ export const MenuCatalog: React.FC<MenuCatalogProps> = ({
           </div>
         </div>
 
-        {/* Quick Suggestion Chips + Favorites Shortcut */}
+        {/* Quick Suggestion Chips */}
         <div className="mt-3 pt-3 border-t border-stone-100 flex items-center justify-between gap-2 text-xs overflow-x-auto no-scrollbar">
           <div className="flex items-center gap-1.5 shrink-0">
             <span className="text-stone-400 font-medium shrink-0 flex items-center gap-1 mr-1">
@@ -352,25 +352,11 @@ export const MenuCatalog: React.FC<MenuCatalogProps> = ({
               );
             })}
           </div>
-
-          {/* Quick Favorites Shortcut Button */}
-          <button
-            onClick={() => handleCategoryClick(selectedCategory === 'Favoris' ? 'Tous' : 'Favoris')}
-            className={`shrink-0 px-3 py-1 rounded-lg font-bold transition cursor-pointer flex items-center gap-1.5 shadow-xs ${
-              selectedCategory === 'Favoris'
-                ? 'bg-rose-600 text-white shadow-rose-500/20'
-                : 'bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200'
-            }`}
-            title="Filtrer pour voir uniquement vos repas sains favoris"
-          >
-            <Heart className={`w-3.5 h-3.5 ${selectedCategory === 'Favoris' ? 'fill-white text-white' : 'fill-rose-500 text-rose-500'}`} />
-            <span>Mes Favoris ({favoritesCount})</span>
-          </button>
         </div>
       </div>
 
-      {/* Category Pills with Dedicated Favorites Pill */}
-      <div className="flex items-center gap-2 overflow-x-auto pb-4 mb-6 no-scrollbar">
+      {/* Category Pills */}
+      <div id="categories-bar" className="flex items-center gap-2 overflow-x-auto pb-4 mb-6 no-scrollbar">
         {/* Tous */}
         <button
           onClick={() => handleCategoryClick('Tous')}
@@ -381,26 +367,6 @@ export const MenuCatalog: React.FC<MenuCatalogProps> = ({
           }`}
         >
           Tous
-        </button>
-
-        {/* Mes Favoris Pill */}
-        <button
-          onClick={() => handleCategoryClick(selectedCategory === 'Favoris' ? 'Tous' : 'Favoris')}
-          className={`px-4 py-2.5 rounded-xl text-sm font-semibold whitespace-nowrap transition cursor-pointer flex items-center gap-2 ${
-            selectedCategory === 'Favoris'
-              ? 'bg-gradient-to-r from-rose-600 to-pink-600 text-white shadow-md shadow-rose-600/25 scale-105 font-bold'
-              : 'bg-white hover:bg-rose-50/70 text-stone-700 hover:text-rose-700 border border-stone-200 hover:border-rose-200'
-          }`}
-        >
-          <Heart className={`w-4 h-4 transition ${selectedCategory === 'Favoris' ? 'fill-white text-white' : 'fill-rose-500/20 text-rose-500'}`} />
-          <span>Mes Favoris</span>
-          <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full ${
-            selectedCategory === 'Favoris'
-              ? 'bg-white/25 text-white'
-              : 'bg-rose-100 text-rose-700'
-          }`}>
-            {favoritesCount}
-          </span>
         </button>
 
         {/* Remaining categories */}
